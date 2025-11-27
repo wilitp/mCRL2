@@ -34,3 +34,38 @@ jittyc*
 
 #On the mac ignore extra directory information
 .DS_Store
+
+# Output directories
+bin/
+lib/
+build/
+out/
+
+# CMake related files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Makefile
+*.cbp # CodeBlocks project files
+*.VC.db # Visual Studio database files
+*.vcxproj* # Visual Studio project files (e.g., .vcxproj, .vcxproj.filters, .vcxproj.user)
+*.sln # Visual Studio solution files
+*.suo # Visual Studio solution user options
+
+# IDE specific files
+.idea/ # CLion
+.vscode/ # VS Code (if not shared project settings)
+*.swp # Vim swap files
+*~ # Emacs backup files
+
+# Operating System specific files
+.DS_Store # macOS
+Thumbs.db # Windows
+
+*.desktop
+
+*.gz
+
+*.cmake
