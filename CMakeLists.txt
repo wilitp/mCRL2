@@ -46,7 +46,7 @@ enable_testing()
 
 option(MCRL2_ENABLE_EXPERIMENTAL    "Enable compilation of experimental tools." OFF)
 option(MCRL2_ENABLE_DEPRECATED      "Enable compilation of deprecated tools." OFF)
-option(MCRL2_ENABLE_DEVELOPER       "Enable compilation of developer tools." OFF)
+option(MCRL2_ENABLE_DEVELOPER       "Enable compilation of developer tools." ON)
 option(MCRL2_ENABLE_GUI_TOOLS       "Enable compilation of tools with a graphical user interface." ON)
 
 option(MCRL2_ENABLE_DOCUMENTATION   "Enable generation of documentation." OFF)
@@ -54,7 +54,7 @@ option(MCRL2_ENABLE_DOC_MANUAL      "Enable generation of tool manual pages, whi
 option(MCRL2_ENABLE_DOC_DOXYGEN     "Enable generation of code reference using Doxygen." ON)
 option(MCRL2_ENABLE_DOC_PDFLATEX    "Enable generation of reference pdfs using pdflatex, which requires tikz and amsmath packages." ON)
 
-option(MCRL2_ENABLE_BOOST_JSON_SUPPORT "Enable compilation of tools and libraries that require boost::json. This raises the minimal boost version requirement to 1.71.0." OFF)
+option(MCRL2_ENABLE_BOOST_JSON_SUPPORT "Enable compilation of tools and libraries that require boost::json. This raises the minimal boost version requirement to 1.71.0." ON)
 option(MCRL2_ENABLE_SYLVAN          "Enable the Sylvan library required by the following symbolic tools: lpsreach, pbessolvesymbolic and ltsconvertsymbolic" ${UNIX})
 option(MCRL2_ENABLE_BENCHMARKS      "Enable benchmarks. Build the 'benchmarks' target to generate the necessary files and tools. Run the benchmarks using ctest." OFF)
 
