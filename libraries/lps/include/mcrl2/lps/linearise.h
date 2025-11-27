@@ -16,6 +16,7 @@
 #include "mcrl2/lps/linearisation_method.h"
 #include "mcrl2/lps/stochastic_specification.h"
 #include "mcrl2/process/parse.h"
+#include <mcrl2/process/process_identifier.h>
 
 namespace mcrl2::lps
 {
@@ -40,6 +41,11 @@ struct t_lin_options
                                  // parser delivers such expressions in a skewed form, causing stack overflow.
   mcrl2::data::rewriter::strategy rewrite_strategy = mcrl2::data::jitty;
 };
+
+void collectPcrlProcesses(
+      const process::process_identifier& procDecl,
+      std::vector <process::process_identifier>& pcrlprocesses,
+      std::set <process::process_identifier>& visited);
 
 /// \brief Linearises a process specification
 /// \param[in] type_checked_spec A process specification
