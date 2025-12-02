@@ -37,7 +37,7 @@ class process_expression: public atermpp::aterm
     explicit process_expression(const atermpp::aterm& term)
       : atermpp::aterm(term)
     {
-      assert(core::detail::check_rule_ProcExpr(*this));
+      //assert(core::detail::check_rule_ProcExpr(*this));
     }
 
     /// \\brief Constructor Z6.

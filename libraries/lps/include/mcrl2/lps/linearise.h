@@ -24,7 +24,7 @@ namespace mcrl2::lps
 /// \brief Options for linearisation
 struct t_lin_options
 {
-  t_lin_method lin_method = lmRegular;
+  lps::t_lin_method lin_method = lps::lmRegular;
   bool no_intermediate_cluster = false;
   bool final_cluster = false;
   bool newstate = false;
@@ -41,11 +41,6 @@ struct t_lin_options
                                  // parser delivers such expressions in a skewed form, causing stack overflow.
   mcrl2::data::rewriter::strategy rewrite_strategy = mcrl2::data::jitty;
 };
-
-void collectPcrlProcesses(
-      const process::process_identifier& procDecl,
-      std::vector <process::process_identifier>& pcrlprocesses,
-      std::set <process::process_identifier>& visited);
 
 /// \brief Linearises a process specification
 /// \param[in] type_checked_spec A process specification
