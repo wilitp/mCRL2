@@ -5,14 +5,47 @@ Note:
 
   effects like the ones regarding variable tables and the like refer to undefined functions/methods. this is just an approximate model for how to translate
 
+As a first approximation, this version doesn't consider data at all, so no process functions / families or instances. Also no actions with data, only actions and their synchronization. And no choice quantification. There's also no conditional operator since there is no data to make predicates about.
 
+We'll later deal with actions with data and their synchronization when one sends (e.g "a(n)") and one receives (e.g "sum b:Nat b(n)")
+
+The first objective is to get the locations and edges as close to what the final product should be.
 
 global variables across the traversal, which is performed DFS pre-order:
 
 stateQueue (queue keeping track of the states generated during traversal)
 
+
+The language to be considered now is:
+
+p ::= a | delta | p1 + p2 | p1 . p2
+
+Assuming we've created an automaton for a process at the mcrl level, SDD then would be something like:
+
+p ::= a    | {
+              newState = state();
+              automaton.edges.push_back(
+                edge(
+                  "a",
+                  stateQueue.top,
+                  newState
+                  )
+                )
+              stateQueue.push_back(newState)
+             }
+
+
+Ignore what follows, started off and then decided to start simpler
+
 P ::= P1(d1, ..., dn)               |  P.state = stateQueue.top
-                                    |  assignmentsForNextTransition = parseassignments(P1(d1..dn))
-                                    |  P1.state = P.state 
+                                    |  assignmentsForNextTransition = parseassignments(P1(d1..dn)) // parseassignments generates assigments for the next transition to make, which is unknown at the time
+                                    |  P1.state = P.state  // state is the same!
+      
+      a(d1, ..., dn)                | P.state = newState();
+                                    | currentAutomaton.edges.push_back(
+                                        newEdge(assignments=assignmentsForNextTransition + makeAssignmentsForAction("a")) 
+                                    | assignmentsForNextTransition = null
+
+                                    | ) 
 
 
