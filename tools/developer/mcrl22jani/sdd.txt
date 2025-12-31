@@ -1,0 +1,18 @@
+SDD for the pCRL2 -> Automaton translation
+
+Note: 
+  tree node attributes like `P.state` are to be stored in a common objectdata class, similar to the one the linearisation code uses.
+
+  effects like the ones regarding variable tables and the like refer to undefined functions/methods. this is just an approximate model for how to translate
+
+
+
+global variables across the traversal, which is performed DFS pre-order:
+
+stateQueue (queue keeping track of the states generated during traversal)
+
+P ::= P1(d1, ..., dn)               |  P.state = stateQueue.top
+                                    |  assignmentsForNextTransition = parseassignments(P1(d1..dn))
+                                    |  P1.state = P.state 
+
+
