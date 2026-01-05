@@ -20,19 +20,70 @@ The language to be considered now is:
 
 p ::= a | delta | p1 + p2 | p1 . p2
 
-Assuming we've created an automaton for a process at the mcrl level, SDD then would be something like:
+where a is any action
+
+Assuming we've created an automaton for a process at the mcrl level(because this subset we're dealing with is pcrl), SDD then would be something like:
+
+TODO: figure out where to pop states from the queue
 
 p ::= a    | {
-              newState = state();
-              automaton.edges.push_back(
-                edge(
-                  "a",
-                  stateQueue.top,
-                  newState
-                  )
-                )
-              stateQueue.push_back(newState)
-             }
+           |  if processSequenciationQueue.empty() then
+           |  
+           |    nextState = newstate();
+           |    stateQueue.push_back(nextState)
+           |  else
+           |    nextState = processSequenciationQueue.top()
+           |    
+           |  automaton.edges.push_back(
+           |    edge(
+           |      "a",
+           |      stateQueue.top,
+           |      nextState
+           |      )
+           |    )
+           | }
+      
+     delta | {
+           |  newState = state();
+           |  stateQueue.push_back(newState)
+           | }
+           |
+           |
+   p1 . p2 | {
+           |
+           |   if p1 = delta then idem delta ; return;
+           |   else
+           |
+           |   p2InitialState = newstate();
+           |
+           |   processSequenciationQueue.push_back(p2InitialState);
+           |
+           |   AFTER FIRST CHILDREN:
+           | 
+           |   processSequenciationQueue.pop()
+           |
+           |
+           | }
+           |
+           |
+           |
+           |
+   p1 + p2 | {
+           |   # state is already on the queue, so there's nothing to do at this level for now
+           | }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 Ignore what follows, started off and then decided to start simpler
