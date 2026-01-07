@@ -13,7 +13,7 @@ The first objective is to get the locations and edges as close to what the final
 
 global variables across the traversal, which is performed DFS pre-order:
 
-stateQueue (queue keeping track of the states generated during traversal)
+stateStack (queue keeping track of the states generated during traversal)
 
 
 The language to be considered now is:
@@ -25,27 +25,29 @@ where a is any action
 Assuming we've created an automaton for a process at the mcrl level(because this subset we're dealing with is pcrl), SDD then would be something like:
 
 TODO: figure out where to pop states from the queue
+Note: maybe never
+Note: maybe we just need a variable of type state and forget the queue
 
 p ::= a    | {
            |  if processSequenciationQueue.empty() then
            |  
            |    nextState = newstate();
-           |    stateQueue.push_back(nextState)
+           |    stateStack.push_back(nextState)
            |  else
            |    nextState = processSequenciationQueue.top()
            |    
            |  automaton.edges.push_back(
            |    edge(
            |      "a",
-           |      stateQueue.top,
+           |      stateStack.top,
            |      nextState
            |      )
            |    )
            | }
       
      delta | {
-           |  newState = state();
-           |  stateQueue.push_back(newState)
+           |  newState = newstate();
+           |  stateStack.push_back(newState)
            | }
            |
            |
@@ -61,6 +63,7 @@ p ::= a    | {
            |   AFTER FIRST CHILDREN:
            | 
            |   processSequenciationQueue.pop()
+           |   stateStack.push_back(p2InitialState)
            |
            |
            | }
@@ -70,6 +73,14 @@ p ::= a    | {
            |
    p1 + p2 | {
            |   # state is already on the queue, so there's nothing to do at this level for now
+           | }
+   p1      | {
+           |   if test objectmap[p1] then
+           |     return;
+           |   else
+           |     nada? , osea, visitar el body
+           |      
+           |   
            | }
 
 
@@ -88,7 +99,7 @@ p ::= a    | {
 
 Ignore what follows, started off and then decided to start simpler
 
-P ::= P1(d1, ..., dn)               |  P.state = stateQueue.top
+P ::= P1(d1, ..., dn)               |  P.state = stateStack.top
                                     |  assignmentsForNextTransition = parseassignments(P1(d1..dn)) // parseassignments generates assigments for the next transition to make, which is unknown at the time
                                     |  P1.state = P.state  // state is the same!
       
