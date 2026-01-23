@@ -123,13 +123,15 @@ class pcrl_to_automaton_translator{
 
       auto identifier = instance.identifier();
 
-      std::cout << "Processing process instance: " << pp(instance) << std::endl;
+      // std::cout << "Processing process instance: " << pp(instance) << std::endl;
 
       // lookup for process expression
       auto expr = std::find_if(spec.equations().begin(), spec.equations().end(),
         [&identifier](const process_equation& eqn) {
           return eqn.identifier() == identifier;
         });
+      
+      addStateToAutomaton(state);
       
       
       // fail if equation not found
@@ -156,6 +158,21 @@ class pcrl_to_automaton_translator{
     return boost::json::object();
   }
 
+  boost::json::object makeEdge(const std::string& source, const std::string& target, const std::string& action) {
+    return boost::json::object{
+      {"action", action},
+      {"location", source},
+      {"destinations", boost::json::array({boost::json::object({{"location", target}})})}
+    };
+  }
+
+  boost::json::object makeSilentEdge(const std::string& source, const std::string& target) {
+    return boost::json::object{
+      {"location", source},
+      {"destinations", boost::json::array({boost::json::object({{"location", target}})})}
+    };
+  }
+
   void translateProcessExpression(const process_expression& expr, std::string previousStateName) {
 
     if(is_action(expr)) {
@@ -170,21 +187,17 @@ class pcrl_to_automaton_translator{
       }
 
       addEdgeToAutomaton(
-        boost::json::object{
-          {"source", previousStateName},
-          {"target", target["name"].as_string().c_str()},
-          {"action", pp(down_cast<action>(expr).label())}
-        }
+        makeEdge(previousStateName, target["name"].as_string().c_str(), pp(down_cast<action>(expr).label()))
       );
 
     } else if(is_delta(expr)) {
       // TODO: check if we can avoid adding a tau transition to delta state here
       ensureDeltaState();
       addEdgeToAutomaton(
-        boost::json::object{
-          {"source", previousStateName},
-          {"target", DELTA_STATE_NAME},
-        }
+        makeSilentEdge(
+         previousStateName,
+         DELTA_STATE_NAME
+        )
       );
     } else if(is_seq(expr)) {
       auto left = process::seq(expr).left();
@@ -218,13 +231,9 @@ class pcrl_to_automaton_translator{
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
       boost::json::object targetState = stateForProcessInstance(instance);
-      addStateToAutomaton(targetState);
 
       addEdgeToAutomaton(
-        boost::json::object{
-          {"source", previousStateName},
-          {"target", targetState["name"].as_string().c_str()},
-        }
+        makeSilentEdge(previousStateName, targetState["name"].as_string().c_str())
       );
     } else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
@@ -252,8 +261,9 @@ class pcrl_to_automaton_translator{
     boost::json::object translate(){
 
       auto initialState = newState();
+      addStateToAutomaton(initialState);
 
-      jani_automaton["initial_location"] = initialState["name"].as_string().c_str();
+      jani_automaton["initial-locations"] = boost::json::array({initialState["name"].as_string().c_str()});
 
       translateProcessExpression(initial_process_call, initialState["name"].as_string().c_str());
 
@@ -265,14 +275,6 @@ class pcrl_to_automaton_translator{
 class jani_translator
 {
   private:
-  void initializeModel() {
-    jani_model = boost::json::object();
-    jani_model["name"] = "mCRL2_to_JANI_model";
-    jani_model["type"] = "pta";
-    jani_model["variables"] = jani_variables;
-    jani_model["automata"] = jani_automata;
-    jani_model["actions"] = jani_actions;
-  }
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
   // TODO: determine how to rewrite a spec so that all parallel compositions are in the initial process
@@ -300,7 +302,7 @@ class jani_translator
   // translates prcl process equation to jani automaton
   boost::json::object translate_process_equation(const process_instance& procInst) {
 
-    std::cout << "Translating process equation for: " << process::pp(procInst) << std::endl;
+    // std::cout << "Translating process equation for: " << process::pp(procInst) << std::endl;
 
     pcrl_to_automaton_translator translator(spec, procInst);
     auto automaton = translator.translate();
@@ -317,7 +319,6 @@ class jani_translator
       );
     }
   }
-  
 
 public:
   boost::json::object jani_model;
@@ -325,6 +326,7 @@ public:
   boost::json::array jani_variables;
   boost::json::array jani_automata;
   boost::json::array jani_edges;
+  boost::json::array jani_system_elements;
 
   process::process_specification spec;
 
@@ -336,11 +338,14 @@ public:
   {
 
     translateActions();
-    auto init = spec.init();
     std::set<process_instance> prclProcesses = collectPcrlProcesses();
 
     for (const auto& procInst : prclProcesses) {
-      std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
+      // std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
+
+      jani_system_elements.push_back(
+          boost::json::value({{"automaton", pp(procInst)}})
+      );
       auto automaton = translate_process_equation(procInst);
       jani_automata.push_back(automaton);
     }
@@ -350,9 +355,14 @@ public:
       {
         {"name", "mCRL2_to_JANI_model"},
         {"type", "pta"},
+        {"jani-version", 1},
         {"variables", jani_variables},
         {"automata", jani_automata},
-        {"actions", jani_actions}
+        {"actions", jani_actions},
+        {"system", {
+          {"elements", jani_system_elements}
+          }
+        }
       }
     );
   }
@@ -385,18 +395,17 @@ protected:
 public:
 
   mcrl22jani_tool()
-    : super("mcrl22lps",
-        "Jan Friso Groote",
-        "translate an mCRL2 specification to an LPS",
-        "Linearises the mCRL2 specification in INFILE and writes the resulting LPS to "
-        "OUTFILE. If OUTFILE is not present, stdout is used. If INFILE is not present, "
-        "stdin is used.")
+    : super("mcrl22jani",
+        "Guillermo de Ipola",
+        "translate an mCRL2 specification to JANI format",
+        "Translate the mCRL2 specification from stdin and writes the resulting JANI model to stdout."
+      )
   {}
 
   bool run() override
   {
 
-    std::cout << "mcrl22jani is translating an mCRL2 specification to JANI format." << std::endl;
+    // std::cout << "mcrl22jani is translating an mCRL2 specification to JANI format." << std::endl;
 
 
     mcrl2::process::process_specification spec;
@@ -429,16 +438,14 @@ public:
                                  << std::endl;
     }
 
-    std::cout << mcrl2::process::pp(spec, false) << std::endl;
-
-    // mcrl2::process::process_equation init_equation();
+    mCRL2log(mcrl2::log::info) << mcrl2::process::pp(spec, false) << std::endl;
 
     // check that spec is linearisable
     // mcrl2::lps::stochastic_specification linear_spec(mcrl2::lps::linearise(spec, m_linearisation_options));
     jani_translator translator(spec);
 
 
-    std::cout << "Translating to JANI..." << std::endl;
+    // std::cout << "Translating to JANI..." << std::endl;
 
     auto janiModel = translator.translate_process_specification();
 
