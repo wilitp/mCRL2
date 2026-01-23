@@ -71,7 +71,7 @@ class pcrl_to_automaton_translator{
   private:
     process::process_specification spec;
     boost::json::object jani_automaton;
-    process_instance initial_process_call;
+    const process_instance& initial_process_call;
     // keeps track of states in sequential compositions
     std::vector<boost::json::object> sequentialCompositionStack; 
     uint stateCounter = 0;
@@ -235,9 +235,10 @@ class pcrl_to_automaton_translator{
   }
 
   public:
-    pcrl_to_automaton_translator(process::process_specification spec, process_instance initial_process_call){
-      spec = spec;
-      initial_process_call = initial_process_call;
+    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call)
+    : initial_process_call(initial_process_call)
+    {
+      this->spec = spec;
 
       std::string name;
 
@@ -302,6 +303,8 @@ class jani_translator
   // translates prcl process equation to jani automaton
   boost::json::object translate_process_equation(const process_instance& procInst) {
 
+    std::cout << "Translating process equation for: " << process::pp(procInst) << std::endl;
+
     pcrl_to_automaton_translator translator(spec, procInst);
     auto automaton = translator.translate();
     return automaton;
@@ -336,7 +339,15 @@ public:
 
 
     // TO BE IMPLEMENTED
-    return boost::json::object();
+    return boost::json::object(
+      {
+        {"name", "mCRL2_to_JANI_model"},
+        {"type", "pta"},
+        {"variables", jani_variables},
+        {"automata", jani_automata},
+        {"actions", jani_actions}
+      }
+    );
   }
 
 };
