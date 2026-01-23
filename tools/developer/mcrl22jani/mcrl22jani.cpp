@@ -25,6 +25,7 @@
 #include <mcrl2/process/process_equation.h>
 #include <mcrl2/process/process_identifier.h>
 #include <regex>
+#include <variant>
 
 // linear process libraries.
 #include "mcrl2/lps/constelm.h"
@@ -59,12 +60,252 @@ using namespace mcrl2::process;
 
 class jani_translation_error : public mcrl2::runtime_error
 {
+  public:
+  jani_translation_error(const std::string& message)
+    : mcrl2::runtime_error(message)
+  {}
 };
+
+class pcrl_to_automaton_translator{
+
+  private:
+    process::process_specification spec;
+    boost::json::object jani_automaton;
+    process_instance initial_process_call;
+    // keeps track of states in sequential compositions
+    std::vector<boost::json::object> sequentialCompositionStack; 
+    uint stateCounter = 0;
+    boost::json::object deltaState;
+    const std::string DELTA_STATE_NAME = "delta_state";
+    std::map<process_instance, boost::json::object> processInstanceStateMap;
+
+
+  boost::json::object newState() {
+     boost::json::object state{
+      {"name", "state_" + std::to_string(stateCounter)}
+    };
+
+    stateCounter++;
+
+    return state;
+  }
+
+  
+  void ensureDeltaState() {
+    if (deltaState.empty()) {
+      deltaState = boost::json::object{
+        {"name", DELTA_STATE_NAME}
+      };
+    }
+    addStateToAutomaton(deltaState);
+  }
+
+  void addStateToAutomaton(const boost::json::object& state) {
+    jani_automaton["locations"].as_array().push_back(state);
+  }
+
+  void addEdgeToAutomaton(const boost::json::object& edge) {
+    jani_automaton["edges"].as_array().push_back(edge);
+  }
+
+  boost::json::object stateForProcessInstance(const process_instance& instance) {
+
+    // check if state already exists
+    if (processInstanceStateMap.find(instance) != processInstanceStateMap.end()) {
+      return processInstanceStateMap[instance];
+    } else {
+
+      boost::json::object state{
+        {"name", "state_for_" + pp(instance.identifier())}
+      };
+
+      processInstanceStateMap[instance] = state;
+
+      auto identifier = instance.identifier();
+
+      std::cout << "Processing process instance: " << pp(instance) << std::endl;
+
+      // lookup for process expression
+      auto expr = std::find_if(spec.equations().begin(), spec.equations().end(),
+        [&identifier](const process_equation& eqn) {
+          return eqn.identifier() == identifier;
+        });
+      
+      
+      // fail if equation not found
+      if (expr == spec.equations().end()) {
+        throw jani_translation_error("Process equation not found for identifier: " + process::pp(identifier));
+      }
+
+      auto expression = expr.base()->expression();
+
+
+      translateProcessExpression(expression, state["name"].as_string().c_str());
+      return state;
+    }
+  }
+
+  // get state for righthand side of sequential composition
+  // if it already exists, otherwise create a new one
+  boost::json::object getStateForRighthandSide(const process_expression& expr) {
+    // check if state already exists
+    if(is_process_instance(expr)) {
+      auto instance = down_cast<process_instance>(expr);
+      instance.identifier();
+    }
+    return boost::json::object();
+  }
+
+  boost::json::object translateProcessExpression(const process_expression& expr, std::string previousStateName) {
+
+    if(is_action(expr)) {
+
+      boost::json::object target;
+
+      if (sequentialCompositionStack.empty()) {
+        target = newState();
+        addStateToAutomaton(target);
+      } else {
+        target = sequentialCompositionStack.back();
+      }
+
+      addEdgeToAutomaton(
+        boost::json::object{
+          {"source", previousStateName},
+          {"target", target["name"].as_string().c_str()},
+          {"action", pp(down_cast<action>(expr).label())}
+        }
+      );
+
+    } else if(is_delta(expr)) {
+      // TODO: check if we can avoid adding a tau transition to delta state here
+      ensureDeltaState();
+      addEdgeToAutomaton(
+        boost::json::object{
+          {"source", previousStateName},
+          {"target", DELTA_STATE_NAME},
+        }
+      );
+    } else if(is_seq(expr)) {
+      auto left = process::seq(expr).left();
+      auto right = process::seq(expr).right();
+
+      boost::json::object intermediateState = newState();
+      addStateToAutomaton(intermediateState);
+
+      // push intermediate state to stack
+      sequentialCompositionStack.push_back(intermediateState);
+
+      // translate left part
+      translateProcessExpression(left, previousStateName);
+
+      // pop intermediate state from stack
+      sequentialCompositionStack.pop_back();
+
+      // translate right part
+      translateProcessExpression(right, intermediateState["name"].as_string().c_str());
+
+    } else if(is_choice(expr)) {
+      auto left = process::choice(expr).left();
+      auto right = process::choice(expr).right();
+
+      // translate left part
+      translateProcessExpression(left, previousStateName);
+
+      // translate right part
+      translateProcessExpression(right, previousStateName);
+    } else if(is_process_instance(expr)) {
+      auto instance = down_cast<process_instance>(expr);
+      // create edge to state for process instance
+      boost::json::object targetState = stateForProcessInstance(instance);
+      addStateToAutomaton(targetState);
+
+      addEdgeToAutomaton(
+        boost::json::object{
+          {"source", previousStateName},
+          {"target", targetState["name"].as_string().c_str()},
+        }
+      );
+    } else {
+      throw jani_translation_error("Unsupported process expression encountered during translation.");
+    }
+
+    // TO BE IMPLEMENTED
+    return boost::json::object();
+  }
+
+  public:
+    pcrl_to_automaton_translator(process::process_specification spec, process_instance initial_process_call){
+      spec = spec;
+      initial_process_call = initial_process_call;
+
+      std::string name;
+
+      name = pp(initial_process_call.identifier());
+
+      jani_automaton = {
+        {"name", name},
+        {"locations", boost::json::array()},
+        {"edges", boost::json::array()}
+      };
+    }
+
+
+    boost::json::object translate(){
+
+      auto initialState = newState();
+
+      jani_automaton["initial_location"] = initialState["name"].as_string().c_str();
+
+      translateProcessExpression(initial_process_call, initialState["name"].as_string().c_str());
+
+      return jani_automaton;
+    };
+};
+
 
 class jani_translator
 {
+  private:
+  void initializeModel() {
+    jani_model = boost::json::object();
+    jani_model["name"] = "mCRL2_to_JANI_model";
+    jani_model["type"] = "pta";
+    jani_model["variables"] = jani_variables;
+    jani_model["automata"] = jani_automata;
+    jani_model["actions"] = jani_actions;
+  }
+  // gets all process identifiers that are reachable from the initial process
+  // for now assumed to be pcrl
+  // TODO: determine how to rewrite a spec so that all parallel compositions are in the initial process
+  std::set<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
+    if (is_process_instance(expr)) {
+      return {down_cast<process_instance>(expr)};
+    }
+    else if (is_merge(expr)) {
+        auto idsLeft = collectPcrlProcessesRec(process::merge(expr).left());
+        auto idsRight = collectPcrlProcessesRec(process::merge(expr).right());
+        idsLeft.insert(idsRight.begin(), idsRight.end());
+        return idsLeft;
+    }
+    else {
+      throw jani_translation_error("Unsupported process expression encountered during pCRL process collection.");
+    }
+  }
+  std::set<process_instance> collectPcrlProcesses() {
+    auto initialProcess = spec.init();
+
+    return collectPcrlProcessesRec(initialProcess);
+  }
 
 
+  // translates prcl process equation to jani automaton
+  boost::json::object translate_process_equation(const process_instance& procInst) {
+
+    pcrl_to_automaton_translator translator(spec, procInst);
+    auto automaton = translator.translate();
+    return automaton;
+  }
   
 
 public:
@@ -74,8 +315,30 @@ public:
   boost::json::array jani_automata;
   boost::json::array jani_edges;
 
-  std::vector<boost::json::object> stateQueue; // states resulting in each transition
-  jani_translator(){}
+  process::process_specification spec;
+
+  // constructor
+  jani_translator(const process::process_specification& specification)
+    : spec(specification){}
+
+  boost::json::object translate_process_specification()
+  {
+
+    auto init = spec.init();
+    std::set<process_instance> prclProcesses = collectPcrlProcesses();
+
+    for (const auto& procInst : prclProcesses) {
+      std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
+      std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
+      auto automaton = translate_process_equation(procInst);
+      jani_automata.push_back(automaton);
+    }
+
+
+    // TO BE IMPLEMENTED
+    return boost::json::object();
+  }
+
 };
 
 class mcrl22jani_tool : public rewriter_tool<input_output_tool>
@@ -114,6 +377,10 @@ public:
 
   bool run() override
   {
+
+    std::cout << "mcrl22jani is translating an mCRL2 specification to JANI format." << std::endl;
+
+
     mcrl2::process::process_specification spec;
     if (input_filename().empty())
     {
@@ -149,7 +416,15 @@ public:
     // mcrl2::process::process_equation init_equation();
 
     // check that spec is linearisable
-    mcrl2::lps::stochastic_specification linear_spec(mcrl2::lps::linearise(spec, m_linearisation_options));
+    // mcrl2::lps::stochastic_specification linear_spec(mcrl2::lps::linearise(spec, m_linearisation_options));
+    jani_translator translator(spec);
+
+
+    std::cout << "Translating to JANI..." << std::endl;
+
+    auto janiModel = translator.translate_process_specification();
+
+    std::cout << janiModel << std::endl;
 
     return true;
   }

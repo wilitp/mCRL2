@@ -27,14 +27,16 @@ Assuming we've created an automaton for a process at the mcrl level(because this
 TODO: figure out where to pop states from the queue
 Note: maybe never
 Note: maybe we just need a variable of type state and forget the queue
+Note: for now we assume that a process call can only be at the end of one or more sequential operators.
+      this is to simplify working on process calls for now.
 
 p ::= a    | {
-           |  if processSequenciationQueue.empty() then
+           |  if processSequentiationStack.empty() then
            |  
            |    nextState = newstate();
            |    stateStack.push_back(nextState)
            |  else
-           |    nextState = processSequenciationQueue.top()
+           |    nextState = processSequentiationStack.top()
            |    
            |  automaton.edges.push_back(
            |    edge(
@@ -58,12 +60,12 @@ p ::= a    | {
            |
            |   p2InitialState = newstate();
            |
-           |   processSequenciationQueue.push_back(p2InitialState);
+           |   processSequentiationStack.push_back(p2InitialState);
            |
            |   AFTER FIRST CHILDREN:
            | 
-           |   processSequenciationQueue.pop()
-           |   stateStack.push_back(p2InitialState)
+           |   processSequentiationStack.pop()
+           |   stateStack.push_bck(p2InitialState)
            |
            |
            | }
@@ -86,6 +88,11 @@ p ::= a    | {
 
 
 
+Notes:
+
+Maybe we can drop the assumption that process calls are at the end of a sequence. If we treat the process call as a separate process; translating it anew 
+anytime the processSequentiationStack is not empty. This still leads to duplication of parts of the automata that are the same, but allows process terms
+to include sequences like "a . c . P . c . P".
 
 
 
@@ -109,5 +116,3 @@ P ::= P1(d1, ..., dn)               |  P.state = stateStack.top
                                     | assignmentsForNextTransition = null
 
                                     | ) 
-
-
