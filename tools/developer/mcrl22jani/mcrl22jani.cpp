@@ -156,7 +156,7 @@ class pcrl_to_automaton_translator{
     return boost::json::object();
   }
 
-  boost::json::object translateProcessExpression(const process_expression& expr, std::string previousStateName) {
+  void translateProcessExpression(const process_expression& expr, std::string previousStateName) {
 
     if(is_action(expr)) {
 
@@ -229,9 +229,6 @@ class pcrl_to_automaton_translator{
     } else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
-
-    // TO BE IMPLEMENTED
-    return boost::json::object();
   }
 
   public:
@@ -309,6 +306,17 @@ class jani_translator
     auto automaton = translator.translate();
     return automaton;
   }
+
+  void translateActions() {
+    // for now, just add all action labels from the specification
+    for (const auto& actionLabel : spec.action_labels()) {
+      jani_actions.push_back(
+        boost::json::object{
+          {"name", pp(actionLabel)}
+        }
+      );
+    }
+  }
   
 
 public:
@@ -327,18 +335,17 @@ public:
   boost::json::object translate_process_specification()
   {
 
+    translateActions();
     auto init = spec.init();
     std::set<process_instance> prclProcesses = collectPcrlProcesses();
 
     for (const auto& procInst : prclProcesses) {
-      std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
       std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
       auto automaton = translate_process_equation(procInst);
       jani_automata.push_back(automaton);
     }
 
 
-    // TO BE IMPLEMENTED
     return boost::json::object(
       {
         {"name", "mCRL2_to_JANI_model"},
