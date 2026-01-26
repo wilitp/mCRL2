@@ -76,6 +76,7 @@ class pcrl_to_automaton_translator{
     std::vector<boost::json::object> sequentialCompositionStack; 
     uint stateCounter = 0;
     boost::json::object deltaState;
+
     const std::string DELTA_STATE_NAME = "delta_state";
     std::map<process_instance, boost::json::object> processInstanceStateMap;
 
@@ -96,8 +97,8 @@ class pcrl_to_automaton_translator{
       deltaState = boost::json::object{
         {"name", DELTA_STATE_NAME}
       };
+      addStateToAutomaton(deltaState);
     }
-    addStateToAutomaton(deltaState);
   }
 
   void addStateToAutomaton(const boost::json::object& state) {
@@ -311,6 +312,7 @@ class jani_translator
 
   void translateActions() {
     // for now, just add all action labels from the specification
+    // TODO: add global transient variables for communicating actions
     for (const auto& actionLabel : spec.action_labels()) {
       jani_actions.push_back(
         boost::json::object{
@@ -404,9 +406,6 @@ public:
 
   bool run() override
   {
-
-    // std::cout << "mcrl22jani is translating an mCRL2 specification to JANI format." << std::endl;
-
 
     mcrl2::process::process_specification spec;
     if (input_filename().empty())
