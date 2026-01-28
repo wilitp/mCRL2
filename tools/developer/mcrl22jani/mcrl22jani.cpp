@@ -289,6 +289,56 @@ class syncs_matrix {
 
   public:
 
+  boost::json::value getResult(std::multiset<std::string> multiAction) {
+    std::string serializedMultiAction;
+    
+    if (multiAction.empty()) {
+      return boost::json::value(nullptr);
+    } 
+
+    serializedMultiAction = "";
+    bool first = true;
+    for (const auto& action : multiAction) {
+      if (!first) {
+        serializedMultiAction += "|";
+      }
+      serializedMultiAction += action;
+      first = false;
+    }
+
+    return boost::json::value(serializedMultiAction);
+  }
+
+  boost::json::array getSynchronisation(std::vector<std::string> actions) {
+    boost::json::array synch;
+
+    for (const auto& action : actions) {
+      if (action == "null") {
+        synch.push_back(boost::json::value(nullptr));
+      } else {
+        synch.push_back(boost::json::value(action));
+      }
+    }
+
+    return synch;
+  }
+
+
+
+  boost::json::array toJsonArray() {
+      boost::json::array jsonArray;
+
+      for (const auto& row : matrix) {
+        jsonArray.push_back(
+          boost::json::object{
+            {"synchronise", getSynchronisation(row.first)},
+            {"result", getResult(row.second)}
+          }
+        );
+      }
+
+      return jsonArray;
+    }
   syncs_matrix(std::vector<std::string> actions) {
     for (const auto& action : actions) {
       matrix.push_back(
@@ -324,8 +374,8 @@ class syncs_matrix {
     for (const auto& otherRow : other.matrix) {
       assert(otherRow.first.size() == otherWidth);
       sync_vector newRow;
-      newRow.first.insert(newRow.first.end(), otherRow.first.begin(), otherRow.first.end());
       newRow.first.insert(newRow.first.end(), thisWidth, "null"); // pad with empty actions
+      newRow.first.insert(newRow.first.end(), otherRow.first.begin(), otherRow.first.end());
       newRow.second = otherRow.second;
       newMatrix.push_back(newRow);
     }
@@ -465,6 +515,14 @@ class jani_translator
         auto idsRight = collectPcrlProcessesRec(process::merge(expr).right());
         idsLeft.insert(idsRight.begin(), idsRight.end());
         return idsLeft;
+    } else if(is_allow(expr)) {
+        return collectPcrlProcessesRec(process::allow(expr).operand()) ;
+    } else if(is_block(expr)) {
+        return collectPcrlProcessesRec(process::block(expr).operand()) ;
+    } else if(is_rename(expr)) {
+        return collectPcrlProcessesRec(process::rename(expr).operand()) ;
+    } else if(is_hide(expr)) {
+        return collectPcrlProcessesRec(process::hide(expr).operand()) ;
     }
     else {
       throw jani_translation_error("Unsupported process expression encountered during pCRL process collection.");
@@ -474,6 +532,46 @@ class jani_translator
     auto initialProcess = spec.init();
 
     return collectPcrlProcessesRec(initialProcess);
+  }
+
+  syncs_matrix buildSyncsMatrixRec(const process_expression& expr) {
+    if (is_process_instance(expr)) {
+      // base case: single process instance
+      std::vector<std::string> actionsVector;
+      for (const auto& el : jani_actions) {
+        actionsVector.push_back(el.as_object().at("name").as_string().c_str());
+      }
+      return syncs_matrix(actionsVector);
+    }
+    else if (is_merge(expr)) {
+        auto leftMatrix = buildSyncsMatrixRec(process::merge(expr).left());
+        auto rightMatrix = buildSyncsMatrixRec(process::merge(expr).right());
+        return leftMatrix || rightMatrix;
+    }
+    else if (is_allow(expr)) {
+        auto allowedActions = process::allow(expr).allow_set();
+        std::set<std::multiset<std::string>> actionsToAllow;
+        for (const auto& multiAction : allowedActions) {
+          std::multiset<std::string> multiActionToInsert;
+          for (const auto& action : multiAction.names()) {
+            mCRL2log(mcrl2::log::info) << "Allowing action in syncs matrix: " << pp(action) << std::endl;
+            multiActionToInsert.insert(pp(action));
+
+          }
+          actionsToAllow.insert(multiActionToInsert);
+        }
+        auto subMatrix = buildSyncsMatrixRec(process::allow(expr).operand());
+        return subMatrix.allow(actionsToAllow);
+    }
+    else {
+      throw jani_translation_error("Unsupported process expression encountered during syncs matrix construction.");
+    }
+  }
+
+  syncs_matrix buildSyncsMatrix() {
+    auto initialProcess = spec.init();
+
+    return buildSyncsMatrixRec(initialProcess);
   }
 
 
@@ -499,6 +597,7 @@ class jani_translator
     }
   }
 
+
 public:
   boost::json::object jani_model;
   boost::json::array jani_actions;
@@ -511,13 +610,16 @@ public:
 
   // constructor
   jani_translator(const process::process_specification& specification)
-    : spec(specification){}
+    : spec(specification){
+
+    }
 
   boost::json::object translate_process_specification()
   {
 
     translateActions();
     std::set<process_instance> prclProcesses = collectPcrlProcesses();
+    auto syncsMatrix = buildSyncsMatrix();
 
     for (const auto& procInst : prclProcesses) {
       // std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
@@ -539,7 +641,8 @@ public:
         {"automata", jani_automata},
         {"actions", jani_actions},
         {"system", {
-          {"elements", jani_system_elements}
+          {"elements", jani_system_elements},
+          {"syncs", syncsMatrix.toJsonArray()}
           }
         }
       }
