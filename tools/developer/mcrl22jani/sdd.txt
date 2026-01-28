@@ -30,62 +30,60 @@ Note: maybe we just need a variable of type state and forget the queue
 Note: for now we assume that a process call can only be at the end of one or more sequential operators.
       this is to simplify working on process calls for now.
 
-p ::= a    | {
-           |  if processSequentiationStack.empty() then
-           |  
-           |    nextState = newstate();
-           |    stateStack.push_back(nextState)
-           |  else
-           |    nextState = processSequentiationStack.top()
-           |    
-           |  automaton.edges.push_back(
-           |    edge(
-           |      "a",
-           |      stateStack.top,
-           |      nextState
-           |      )
-           |    )
-           | }
+p ::= a               | {
+                      |  if processSequentiationStack.empty() then
+                      |  
+                      |    nextState = newstate();
+                      |    stateStack.push_back(nextState)
+                      |  else
+                      |    nextState = processSequentiationStack.top()
+                      |    
+                      |  automaton.edges.push_back(
+                      |    edge(
+                      |      "a",
+                      |      stateStack.top,
+                      |      nextState
+                      |      )
+                      |    )
+                      | }
       
-     delta | {
-           |  newState = newstate();
-           |  stateStack.push_back(newState)
-           | }
-           |
-           |
-   p1 . p2 | {
-           |
-           |   if p1 = delta then idem delta ; return;
-           |   else
-           |
-           |   p2InitialState = newstate();
-           |
-           |   processSequentiationStack.push_back(p2InitialState);
-           |
-           |   AFTER FIRST CHILDREN:
-           | 
-           |   processSequentiationStack.pop()
-           |   stateStack.push_bck(p2InitialState)
-           |
-           |
-           | }
-           |
-           |
-           |
-           |
-   p1 + p2 | {
-           |   # state is already on the queue, so there's nothing to do at this level for now
-           | }
-   p1      | {
-           |   if test objectmap[p1] then
-           |     return;
-           |   else
-           |     nada? , osea, visitar el body
-           |      
-           |   
-           | }
-
-
+     delta            | {
+                      |  newState = newstate();
+                      |  stateStack.push_back(newState)
+                      | }
+                      |
+                      |
+   p1 . p2            | {
+                      |
+                      |   if p1 = delta then idem delta ; return;
+                      |   else
+                      |
+                      |   p2InitialState = newstate();
+                      |
+                      |   processSequentiationStack.push_back(p2InitialState);
+                      |
+                      |   AFTER FIRST CHILDREN:
+                      | 
+                      |   processSequentiationStack.pop()
+                      |   stateStack.push_bck(p2InitialState)
+                      |
+                      |
+                      | }
+                      |
+                      |
+                      |
+                      |
+   p1 + p2            | {
+                      |   # state is already on the queue, so there's nothing to do at this level for now
+                      | }
+   p1                 | {
+                      |   if test objectmap[p1] then
+                      |     return;
+                      |   else
+                      |     nada? , osea, visitar el body
+                      |      
+                      |   
+                      | }
 
 
 Notes:
@@ -97,7 +95,11 @@ to include sequences like "a . c . P . c . P".
 
 
 
+We'll now focus on synchronization and communication. I.e we'll be translating `||`, `comm`, `allow`, `block`, `rename`, `hide`.
 
+Most of the rules should be effects on a global `syncs` structure we'll keep track off. Initially this structure should include the vectors needed to allow any automaton to perform any action in the action declarations section. As we traverse the AST, we'll associate statements to operations to perform on this structure. Once we're done, we should have a correct sync matrix that allows, renames, communicates and hides all the actions according to operations.
+
+We should also somehow keep track of the with of the matrix
 
 
 

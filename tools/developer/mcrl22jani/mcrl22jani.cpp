@@ -272,6 +272,183 @@ class pcrl_to_automaton_translator{
     };
 };
 
+using sync_vector = std::pair<std::vector<std::string>, std::multiset<std::string>>;
+using inner_matrix = std::vector<sync_vector>;
+
+class syncs_matrix {
+  // vector of rows, in which each row has a left-hand side of ordered actions
+  // and a right-hand side of a multiset of actions.
+  inner_matrix matrix;
+
+  private:
+
+    syncs_matrix(const inner_matrix& m)
+      : matrix(m)
+    {}
+
+
+  public:
+
+  syncs_matrix(std::vector<std::string> actions) {
+    for (const auto& action : actions) {
+      matrix.push_back(
+        std::make_pair(
+          std::vector<std::string>{action},
+          std::multiset<std::string>{action}
+        )
+      );
+    }
+  }
+
+  syncs_matrix operator||(const syncs_matrix& other) {
+    // Note: this mutates the current object
+    // and also internal structures from operands. Take into account when debugging.
+    inner_matrix newMatrix;
+
+    // assumes invariant that all vectors in lhs have the same size
+    // and that matrices are non-empty
+    assert(this->matrix.size() > 0);
+    assert(other.matrix.size() > 0);
+    uint thisWidth = this->matrix[0].first.size();
+    uint otherWidth = other.matrix[0].first.size();
+
+    // explicitly add rows for independent multiactions for the composed processes
+    for (const auto& thisRow : this->matrix) {
+      assert(thisRow.first.size() == thisWidth);
+      sync_vector newRow;
+      newRow.first.insert(newRow.first.end(), thisRow.first.begin(), thisRow.first.end());
+      newRow.first.insert(newRow.first.end(), otherWidth, "null"); // pad with empty actions
+      newRow.second = thisRow.second;
+      newMatrix.push_back(newRow);
+    }
+    for (const auto& otherRow : other.matrix) {
+      assert(otherRow.first.size() == otherWidth);
+      sync_vector newRow;
+      newRow.first.insert(newRow.first.end(), otherRow.first.begin(), otherRow.first.end());
+      newRow.first.insert(newRow.first.end(), thisWidth, "null"); // pad with empty actions
+      newRow.second = otherRow.second;
+      newMatrix.push_back(newRow);
+    }
+    
+    // now add synchronized rows
+    for (const auto& otherRow : other.matrix) {
+      for (const auto& thisRow : this->matrix) {
+
+        // concatenate left-hand sides
+        std::vector<std::string> newLHS = thisRow.first;
+        newLHS.insert(newLHS.end(), otherRow.first.begin(), otherRow.first.end());
+
+        // add multisets on right-hand sides
+        std::multiset<std::string> newRHS = thisRow.second;
+        newRHS.insert(otherRow.second.begin(), otherRow.second.end());
+
+        newMatrix.push_back(
+          std::make_pair(
+            newLHS,
+            newRHS
+          )
+        );
+      }
+    }
+    return syncs_matrix(newMatrix);
+  }
+
+  syncs_matrix hide(const std::set<std::string>& actionsToHide) {
+
+    for(const auto& action : actionsToHide) {
+      // delete action from all multiactions possible in order to make them invisible / internal
+      // Note: when a multiset end up empty, this should signify a tau action.
+      for (auto& row : matrix) {
+        row.second.erase(action);
+      }
+    }
+    return *this;
+  }
+
+  syncs_matrix rename(const std::map<std::string, std::string>& renamings) {
+    for(auto& renaming : renamings) {
+      const std::string& from = renaming.first;
+      const std::string& to = renaming.second;
+
+      for (auto& row : matrix) {
+        // remove renamed label
+        auto ocurrences = row.second.erase(from);
+
+        // introduce new label to multiaction as many times as needed
+        for (uint i = 0; i < ocurrences; i++) {
+          row.second.insert(to);
+        }
+      }
+    }
+    return *this;
+  }
+
+  syncs_matrix comm(const std::set<std::pair<std::multiset<std::string>, std::string>>& comms) {
+
+    for (auto& row : matrix) {
+
+      bool isSubMultiset = std::all_of(
+        comms.begin(),
+        comms.end(),
+        [&row](const auto& commPair) {
+          const auto& commMultiset = commPair.first;
+          for (const auto& action : commMultiset) {
+            if (commMultiset.count(action) < row.second.count(action)) {
+              return false;
+            }
+          }
+          return true;
+        }
+      );
+      
+      if (!isSubMultiset) {
+        continue;
+      }
+
+      // Note: it's ok to do this sequentially
+      // as no action can occur in both sides of different communications
+
+      for (const auto& commPair : comms) {
+        const auto& commMultiset = commPair.first;
+        const auto& commResult = commPair.second;
+
+        // remove the communicating actions from the multiset
+        for (const auto& action : commMultiset) {
+          row.second.erase(row.second.find(action));
+        }
+        // add the resulting action to the multiset
+        row.second.insert(commResult);
+      }
+    }
+    
+    return *this;
+  }
+
+  // NOTE: allow works on multiactions, block does not,
+  // go figure.
+  syncs_matrix allow(const std::set<std::multiset<std::string>>& multiactionsToAllow) {
+    for (auto row = matrix.begin(); row != matrix.end(); row++) {
+      if (multiactionsToAllow.contains(row->second)) {
+        continue;
+      } else {
+        matrix.erase(row);
+      }
+    }
+    return *this;
+  }
+  syncs_matrix block(const std::set<std::string>& actionsToBlock) {
+    for (const auto& action : actionsToBlock) {
+      // delete action from all multiactions possible in order to block them
+      for (auto row = matrix.begin(); row != matrix.end(); row++) {
+        if (row->second.contains(action))
+          matrix.erase(row);
+      }
+    }
+    return *this;
+  }
+
+};
+
 
 class jani_translator
 {
@@ -303,7 +480,7 @@ class jani_translator
   // translates prcl process equation to jani automaton
   boost::json::object translate_process_equation(const process_instance& procInst) {
 
-    // std::cout << "Translating process equation for: " << process::pp(procInst) << std::endl;
+    mCRL2log(mcrl2::log::info) << "Translating process equation for: " << process::pp(procInst) << std::endl;
 
     pcrl_to_automaton_translator translator(spec, procInst);
     auto automaton = translator.translate();
