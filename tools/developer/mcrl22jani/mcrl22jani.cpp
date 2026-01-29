@@ -437,34 +437,29 @@ class syncs_matrix {
 
     for (auto& row : matrix) {
 
-      bool isSubMultiset = std::all_of(
-        comms.begin(),
-        comms.end(),
-        [&row](const auto& commPair) {
-          const auto& commMultiset = commPair.first;
-          for (const auto& action : commMultiset) {
-            if (commMultiset.count(action) < row.second.count(action)) {
-              return false;
-            }
-          }
-          return true;
-        }
-      );
-      
-      if (!isSubMultiset) {
-        continue;
-      }
-
       // Note: it's ok to do this sequentially
       // as no action can occur in both sides of different communications
+      // actually no action can ocurr on the left side of more than one communication
 
       for (const auto& commPair : comms) {
         const auto& commMultiset = commPair.first;
         const auto& commResult = commPair.second;
+        bool isSubMultiset = true;
+        for (const auto& action : commMultiset) {
+          if (commMultiset.count(action) > row.second.count(action)) {
+            isSubMultiset = false;
+          }
+        }
+
+        if (!isSubMultiset) {
+          continue;
+        }
 
         // remove the communicating actions from the multiset
         for (const auto& action : commMultiset) {
-          row.second.erase(row.second.find(action));
+          auto it = row.second.find(action);
+          assert(it != row.second.end());
+          row.second.erase(it);
         }
         // add the resulting action to the multiset
         row.second.insert(commResult);
@@ -477,21 +472,24 @@ class syncs_matrix {
   // NOTE: allow works on multiactions, block does not,
   // go figure.
   syncs_matrix allow(const std::set<std::multiset<std::string>>& multiactionsToAllow) {
-    for (auto row = matrix.begin(); row != matrix.end(); row++) {
+    for (auto row = matrix.begin(); row != matrix.end(); ) {
       if (multiactionsToAllow.contains(row->second)) {
-        continue;
+        ++row;
       } else {
-        matrix.erase(row);
+        row = matrix.erase(row);
       }
     }
     return *this;
   }
   syncs_matrix block(const std::set<std::string>& actionsToBlock) {
     for (const auto& action : actionsToBlock) {
-      // delete action from all multiactions possible in order to block them
-      for (auto row = matrix.begin(); row != matrix.end(); row++) {
-        if (row->second.contains(action))
-          matrix.erase(row);
+      // delete every multiaction that contains a blocked action
+      for (auto row = matrix.begin(); row != matrix.end();) {
+        if (row->second.contains(action)) {
+          row = matrix.erase(row);
+        } else {
+          ++row;
+        }
       }
     }
     return *this;
@@ -523,8 +521,11 @@ class jani_translator
         return collectPcrlProcessesRec(process::rename(expr).operand()) ;
     } else if(is_hide(expr)) {
         return collectPcrlProcessesRec(process::hide(expr).operand()) ;
+    } else if(is_comm(expr)) {
+        return collectPcrlProcessesRec(process::comm(expr).operand()) ;
     }
     else {
+      mCRL2log(mcrl2::log::info) << "Unsupported process expression: " << process::pp(expr) << std::endl;
       throw jani_translation_error("Unsupported process expression encountered during pCRL process collection.");
     }
   }
@@ -562,6 +563,45 @@ class jani_translator
         }
         auto subMatrix = buildSyncsMatrixRec(process::allow(expr).operand());
         return subMatrix.allow(actionsToAllow);
+    } else if (is_block(expr)) {
+      auto blockedActions = process::block(expr).block_set();
+      std::set<std::string> actionsToBlock;
+      for (const auto& action : blockedActions) {
+        mCRL2log(mcrl2::log::info) << "Blocking action in syncs matrix: " << pp(action) << std::endl;
+        actionsToBlock.insert(pp(action));
+      }
+      auto subMatrix = buildSyncsMatrixRec(process::block(expr).operand());
+      return subMatrix.block(actionsToBlock);
+    } else if (is_hide(expr)) {
+      auto hiddenActions = process::hide(expr).hide_set();
+      std::set<std::string> actionsToHide;
+      for (const auto& action : hiddenActions) {
+        mCRL2log(mcrl2::log::info) << "Hiding action in syncs matrix: " << pp(action) << std::endl;
+        actionsToHide.insert(pp(action));
+      }
+      auto subMatrix = buildSyncsMatrixRec(process::hide(expr).operand());
+      return subMatrix.hide(actionsToHide);
+    } else if (is_rename(expr)) {
+      auto renamingList = process::rename(expr).rename_set();
+      std::map<std::string, std::string> renamings;
+      for (const auto& renaming : renamingList) {
+        mCRL2log(mcrl2::log::info) << "Renaming action in syncs matrix: " << pp(renaming.source()) << " to " << pp(renaming.target()) << std::endl;
+        renamings[pp(renaming.source())] = pp(renaming.target());
+      }
+      auto subMatrix = buildSyncsMatrixRec(process::rename(expr).operand());
+      return subMatrix.rename(renamings);
+    } else if (is_comm(expr)) {
+      auto commSet = process::comm(expr).comm_set();
+      std::set<std::pair<std::multiset<std::string>, std::string>> actionsToComm;
+      for (const auto& commExp : commSet) {
+        std::multiset<std::string> commLHS;
+        for (const auto& action : commExp.action_name().names()) {
+          commLHS.insert(pp(action));
+        }
+        actionsToComm.insert(std::make_pair(commLHS, pp(commExp.name())));
+      }
+      auto subMatrix = buildSyncsMatrixRec(process::comm(expr).operand());
+      return subMatrix.comm(actionsToComm);
     }
     else {
       throw jani_translation_error("Unsupported process expression encountered during syncs matrix construction.");
