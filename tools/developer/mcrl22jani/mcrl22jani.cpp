@@ -66,9 +66,85 @@ class jani_translation_error : public mcrl2::runtime_error
   {}
 };
 
+
+class scope {
+  public:
+    // maps variable names to their allocated local 
+    // variable in the JANI automaton.
+    std::map<std::string, std::string> table;
+};
+
+using jani_var_name = std::string;
+using mcrl2_var_name = std::string;
+
+class symbol_table {
+private:
+    std::vector<scope> scopes;
+    // if a variable is declared already, we need to append a number since
+    // automaton variables don't have scopes.
+    // Note: this is redundant, since variables in the table will have the numbers,
+    // this just makes it faster to find the next available number.
+    std::map<jani_var_name, uint> counters;
+    // keeps track of whether a variable needs to be read
+    std::set<jani_var_name> readSet;
+public:
+
+    // initialize symbol table and other structures
+    symbol_table() {
+    }
+
+    bool requiresReading(const jani_var_name& var) const {
+      return readSet.contains(var);
+    }
+
+    void markForReading(const jani_var_name& var) {
+      readSet.insert(var);
+    }
+
+    // deletes every scope but the first one
+    void clearScopes() {
+      auto it = scopes.begin();
+      scopes.erase(it, scopes.end());
+    }
+    void registerVar(const mcrl2_var_name& var, const std::string& processName, bool isParam = false) {
+      auto scope = scopes.back();
+      std::string baseName;
+      if (isParam) {
+        baseName = processName + "_param_" + var;
+      } else {
+        baseName = processName + "_" + var;
+      }
+      uint& counter = counters[baseName];
+      jani_var_name jani_var = baseName;
+      if (counter > 0 && !isParam) {
+        jani_var += "_" + std::to_string(counter);
+      }
+      scope.table[var] = jani_var;
+      counter++;
+    }
+    void enterScope() {
+      scopes.push_back(scope());
+    }
+    void leaveScope() {
+      scopes.pop_back();
+    }
+
+    jani_var_name getVariable(mcrl2_var_name name) const {
+      for(auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
+        auto scope = *it;
+        if (scope.table.find(name) != scope.table.end()) {
+          return scope.table[name];
+        }
+      }
+      throw jani_translation_error("Variable not found in symbol table: " + name);
+    }
+};
+
+
 class pcrl_to_automaton_translator{
 
   private:
+    symbol_table table;
     process::process_specification spec;
     boost::json::object jani_automaton;
     const process_instance& initial_process_call;
@@ -109,6 +185,21 @@ class pcrl_to_automaton_translator{
     jani_automaton["edges"].as_array().push_back(edge);
   }
 
+  process_equation& lookup_process_equation(const process_identifier& id) {
+    auto it = std::find_if(spec.equations().begin(), spec.equations().end(),
+            [&id](const process_equation& eqn) {
+              return eqn.identifier() == id;
+            });
+
+      // fail if equation not found
+      if (it == spec.equations().end()) {
+        throw jani_translation_error("Process equation not found for identifier: " + process::pp(id));
+      }
+    
+    return *it.base();
+
+  }
+
   boost::json::object stateForProcessInstance(const process_instance& instance) {
 
     // check if state already exists
@@ -127,36 +218,20 @@ class pcrl_to_automaton_translator{
       // std::cout << "Processing process instance: " << pp(instance) << std::endl;
 
       // lookup for process expression
-      auto expr = std::find_if(spec.equations().begin(), spec.equations().end(),
-        [&identifier](const process_equation& eqn) {
-          return eqn.identifier() == identifier;
-        });
+      auto eq = lookup_process_equation(identifier);
       
       addStateToAutomaton(state);
       
-      
-      // fail if equation not found
-      if (expr == spec.equations().end()) {
-        throw jani_translation_error("Process equation not found for identifier: " + process::pp(identifier));
+      auto expression = eq.expression();
+
+      // TODO: allocate variables for this process instance
+      for (auto& param : eq.formal_parameters()) {
+        table.registerVar(static_cast<std::string>(param.name()).c_str(), pp(instance.identifier()), true);
       }
-
-      auto expression = expr.base()->expression();
-
 
       translateProcessExpression(expression, state["name"].as_string().c_str());
       return state;
     }
-  }
-
-  // get state for righthand side of sequential composition
-  // if it already exists, otherwise create a new one
-  boost::json::object getStateForRighthandSide(const process_expression& expr) {
-    // check if state already exists
-    if(is_process_instance(expr)) {
-      auto instance = down_cast<process_instance>(expr);
-      instance.identifier();
-    }
-    return boost::json::object();
   }
 
   boost::json::object makeEdge(const std::string& source, const std::string& target, const std::string& action) {
@@ -167,11 +242,163 @@ class pcrl_to_automaton_translator{
     };
   }
 
-  boost::json::object makeSilentEdge(const std::string& source, const std::string& target) {
+  boost::json::object makeSilentEdge(const std::string& source, const std::string& target, const boost::json::array& assignments = boost::json::array({})) {
     return boost::json::object{
       {"location", source},
-      {"destinations", boost::json::array({boost::json::object({{"location", target}})})}
+      {"destinations", boost::json::array({boost::json::object({{"location", target}})})},
+      {"assignments", assignments}
     };
+  }
+
+  boost::json::array compute_assignments(const process_instance& instance) {
+    data_expression_list arguments = instance.actual_parameters();
+    auto eq = lookup_process_equation(instance.identifier());
+    variable_list parameters = eq.formal_parameters();
+
+    // calculate jani names to assign
+    std::vector<jani_var_name> lhss;
+    for (auto& param : parameters) {
+      lhss.push_back(table.getVariable(param.name()));
+    }
+
+    // calculate jani expressions to assign
+    std::vector<boost::json::value> rhss;
+    for (auto& arg : arguments) {
+      rhss.push_back(convert_data_expression(arg));
+    }
+
+    assert(lhss.size() == rhss.size());
+
+    // merge them into the assignments array
+    boost::json::array assignments;
+
+    for (uint i=0; i < lhss.size(); i++){
+      assignments.push_back(
+        boost::json::object {
+          {"ref", lhss[i]},
+          {"value", rhss[i]}
+        }
+      );
+    }
+  }
+
+
+  boost::json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
+  {
+    rewriter r;
+    const data::data_expression e = r(e_in);
+    if (is_variable(e))
+    {
+      // check the variable doesn't need reading
+      // auto varName = static_cast<std::string>(atermpp::down_cast<data::variable>(e).name()).c_str();
+      auto varName = pp(atermpp::down_cast<data::variable>(e).name());
+      auto janiVar = table.getVariable(varName);
+      if(table.requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
+        throw jani_translation_error("This variable requires reading, can't be used in an expression before it's used in an action receiving a value.");
+      }
+      return boost::json::value(varName);
+    }
+    else if (data::sort_pos::is_positive_constant(e) ||
+      data::sort_nat::is_natural_constant(e) ||
+      data::sort_int::is_integer_constant(e)) {
+      return std::stoi(pp(e));
+    }
+    else if (data::sort_bool::is_true_function_symbol(e)) {
+      return true;
+    }
+    else if (data::sort_bool::is_false_function_symbol(e)) {
+      return false;
+    }
+    else if (data::sort_bool::is_not_application(e))
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return boost::json::object{
+        {"op", reinterpret_cast<const char*>(u8"¬")},
+        {"exp", convert_data_expression(appl[0], topLevel=false)}
+      };
+    }
+    else if (is_greater_application(e)) // > is not supported within jani, and thus should be flipped
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return boost::json::object{
+        {"left", convert_data_expression(appl[1], topLevel=false)},
+        {"op", "<"},
+        {"right", convert_data_expression(appl[0], topLevel=false)}
+      };
+    }
+    else if (is_greater_equal_application(e)) // >= is not supported within jani, and thus should be flipped
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return boost::json::object{
+        {"left", convert_data_expression(appl[1], topLevel=false)},
+        {"op", reinterpret_cast<const char*>(u8"≤")},
+        {"right", convert_data_expression(appl[0], topLevel=false)}
+      };
+    }
+    else if (data::sort_bool::is_implies_application(e)) {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return boost::json::object{
+        {"op", "ite"},
+        {"if", convert_data_expression(appl[0], topLevel=false)},
+        {"then", convert_data_expression(appl[1], topLevel=false)},
+        {"else", "true"}
+      };
+    }
+    else if (data::sort_real::is_floor_application(e) ||
+      data::sort_real::is_ceil_application(e))
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return boost::json::object{
+        {"op", pp(appl.head())},
+        {"exp", convert_data_expression(appl[0], topLevel=false)}
+      };
+    }
+    else if (data::is_application(e) && e.size() == 3) {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return boost::json::object{
+        {"left", convert_data_expression(appl[0], topLevel=false)},
+        {"op", convert_operator_to_jani(appl.head())},
+        {"right", convert_data_expression(appl[1], topLevel=false)}
+      };
+    }
+    else
+    {
+      throw mcrl2::runtime_error("Jani only supports expressions true, false and numbers. "
+        "It does not support the main operator in the expression " + pp(e) + ".");
+    }
+  }
+
+
+  std::string convert_operator_to_jani(const data::data_expression& opid) const {
+    if (std::string op = mcrl2::data::pp(opid);
+      "!=" == op) 
+    {
+      return reinterpret_cast<const char*>(u8"≠");
+    }
+    else if ("==" == op) 
+    {
+      return "=";
+    }
+    else if ("<=" == op) 
+    {
+      return reinterpret_cast<const char*>(u8"≤");
+    }
+    else if ("&&" == op) 
+    {
+      return reinterpret_cast<const char*>(u8"∧");
+    }
+    else if ("||" == op) 
+    {
+      return reinterpret_cast<const char*>(u8"∨");
+    }
+    else if ("@cReal" == op) 
+    { 
+      return "/"; // threat real numbers as a division operator
+    }
+    else 
+    {
+      return op.c_str();
+    }
   }
 
   void translateProcessExpression(const process_expression& expr, std::string previousStateName) {
@@ -229,14 +456,26 @@ class pcrl_to_automaton_translator{
       // translate right part
       translateProcessExpression(right, previousStateName);
     } else if(is_process_instance(expr)) {
+      // TODO:
+      // - get parameters and compute assignments from the actual parameters
+      // - convert expressions to jani, checking that no expression includes a variable to be read
+      // - update edge insertion code to include the assignments
+
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
+
+      // clear table before possibly processing the process body
+      table.clearScopes();
+      table.enterScope();
       boost::json::object targetState = stateForProcessInstance(instance);
 
+      auto assignments = compute_assignments(instance);
+      // boost::json::array assignments({});
+
       addEdgeToAutomaton(
-        makeSilentEdge(previousStateName, targetState["name"].as_string().c_str())
+        makeSilentEdge(previousStateName, targetState["name"].as_string().c_str(), assignments=assignments)
       );
-    } else {
+    }  else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
   }

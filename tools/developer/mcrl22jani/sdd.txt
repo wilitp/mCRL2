@@ -99,10 +99,72 @@ We'll now focus on synchronization and communication. I.e we'll be translating `
 
 Most of the rules should be effects on a global `syncs` structure we'll keep track off. Initially this structure should include the vectors needed to allow any automaton to perform any action in the action declarations section. As we traverse the AST, we'll associate statements to operations to perform on this structure. Once we're done, we should have a correct sync matrix that allows, renames, communicates and hides all the actions according to operations.
 
-We should also somehow keep track of the with of the matrix
+We should also somehow keep track of the with of the matrix.
+
+Problem solved: the right-hand side of the sync matrix is the one keeping track of both allowed and visible transitions, which are the things over which comm, allow, block, rename and hide operate. Then the translation can be carried out as follows:
+
+Traverse the parallel composition tree depth first, finding leafs (process instances). When encountering a leaf, annotate it with a $n x 2$ matrix to allow it to perform any action independently.
+
+When processing non-leaf nodes, check the operator used and apply a version of the operator that works on the matrices annotated in it's process operand. Annotate the node with the resulting matrix.
+
+And so on and so forth.
+
+...
+
+Profit!
 
 
+We'll now focus on data.
 
+that portion is:
+
+p ::= sum x:S . p1 || b -> p1 <> p
+
+p ::= sum x:S . p1                 |  enterScope()
+                                   |  // marks this var as `read` which will help us when data is used in actions
+                                   |  // will also help to throw an error if a variable yet to be read is used in an expression
+                                   |  registerVar("x", read := true) 
+                                   |  
+                                   | 
+| b -> p1 <> p2                    |  initialStateLeft
+                                   |  leftBranchEdge := edge(guard=convert_data_expression(b), initialStateLeft)
+                                   |  initialStateRight
+                                   |  rightBranchEdge := edge(guard=convert_data_expression(!b), initialStateRight)
+                                   |
+                                   |
+| a(d1..dn)                        |  
+                                   |  if processSequentiationStack.empty() then
+                                   |  
+                                   |    nextState = newstate();
+                                   |    stateStack.push_back(nextState)
+                                   |  else
+                                   |    nextState = processSequentiationStack.top()
+                                   |  
+                                   |  // for each piece of data in the action, check for the need of reading a value
+                                   |  // values that require reading can only be the whole expression `n` and can't 
+                                   |  // appear as a subexpression e.g `2 * n + 1`
+                                   |  // expressions including only constants and writable variables are unconstrained
+                                   |  assignments := convert_assignment_list_to_jani_assignments()
+                                   |  automaton.edges.push_back(
+                                   |    edge(
+                                   |      "a",
+                                   |      assignments := assignments,
+                                   |      stateStack.top,
+                                   |      nextState
+                                   |      )
+                                   |    )
+                                   | 
+                                   |
+                                   |
+                                   |
+| p1(d1..dn) | p1(x1=d1..xn=dn)    |  // find variables in process def and assign them
+                                   |  // add to edge and do the same as before
+                                   |
+                                   |
+                                   |
+                                   |
+                                   |
+                                   |
 
 
 
