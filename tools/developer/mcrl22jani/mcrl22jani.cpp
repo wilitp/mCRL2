@@ -538,7 +538,7 @@ class syncs_matrix {
 
   public:
 
-  boost::json::value getResult(std::multiset<std::string> multiAction) {
+  boost::json::value getResult(std::multiset<std::string> multiAction, std::set<std::string>& jani_multiactions_set) {
     std::string serializedMultiAction;
     
     if (multiAction.empty()) {
@@ -553,6 +553,10 @@ class syncs_matrix {
       }
       serializedMultiAction += action;
       first = false;
+    }
+
+    if (multiAction.size() > 1) {
+      jani_multiactions_set.insert(serializedMultiAction);
     }
 
     return boost::json::value(serializedMultiAction);
@@ -574,14 +578,14 @@ class syncs_matrix {
 
 
 
-  boost::json::array toJsonArray() {
+  boost::json::array toJsonArray(std::set<std::string>& jani_multiactions_set) {
       boost::json::array jsonArray;
 
       for (const auto& row : matrix) {
         jsonArray.push_back(
           boost::json::object{
             {"synchronise", getSynchronisation(row.first)},
-            {"result", getResult(row.second)}
+            {"result", getResult(row.second, jani_multiactions_set)}
           }
         );
       }
@@ -900,6 +904,7 @@ class jani_translator
 public:
   boost::json::object jani_model;
   boost::json::array jani_actions;
+  std::set<std::string> jani_multiactions_set;
   boost::json::array jani_variables;
   boost::json::array jani_automata;
   boost::json::array jani_edges;
@@ -930,6 +935,15 @@ public:
       jani_automata.push_back(automaton);
     }
 
+    auto jsonMatrix = syncsMatrix.toJsonArray(jani_multiactions_set);
+
+    for (auto& multiaction : jani_multiactions_set) {
+      jani_actions.push_back(
+        boost::json::object{
+          {"name", multiaction}
+        }
+      );
+    }
 
     return boost::json::object(
       {
@@ -941,7 +955,7 @@ public:
         {"actions", jani_actions},
         {"system", {
           {"elements", jani_system_elements},
-          {"syncs", syncsMatrix.toJsonArray()}
+          {"syncs", jsonMatrix}
           }
         }
       }
