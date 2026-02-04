@@ -122,6 +122,10 @@ public:
       }
       uint& counter = counters[baseName];
       jani_var_name jani_var = baseName;
+
+      if (!isParam) {
+        markForReading(jani_var);
+      }
       if (counter > 0 && !isParam) {
         jani_var += "_" + std::to_string(counter);
       }
