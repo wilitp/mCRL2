@@ -72,6 +72,11 @@ class scope {
     // maps variable names to their allocated local 
     // variable in the JANI automaton.
     std::map<std::string, std::string> table;
+    bool isProcessScope = false;
+
+    scope() = default;
+
+    scope(bool isProcessScope) : isProcessScope(isProcessScope) {}
 };
 
 using jani_var_name = std::string;
@@ -107,7 +112,7 @@ public:
       scopes.erase(it, scopes.end());
     }
     void registerVar(const mcrl2_var_name& var, const std::string& processName, bool isParam = false) {
-      auto scope = scopes.back();
+      scope& scope = scopes.back();
       std::string baseName;
       if (isParam) {
         baseName = processName + "_param_" + var;
@@ -125,6 +130,11 @@ public:
     void enterScope() {
       scopes.push_back(scope());
     }
+
+    void enterProcessScope() {
+      scopes.push_back(scope(true));
+    }
+
     void leaveScope() {
       scopes.pop_back();
     }
@@ -134,6 +144,10 @@ public:
         auto scope = *it;
         if (scope.table.find(name) != scope.table.end()) {
           return scope.table[name];
+        }
+        if (scope.isProcessScope) {
+          // don't look past the current process scope
+          break;
         }
       }
       throw jani_translation_error("Variable not found in symbol table: " + name);
@@ -154,7 +168,7 @@ class pcrl_to_automaton_translator{
     boost::json::object deltaState;
 
     const std::string DELTA_STATE_NAME = "delta_state";
-    std::map<process_instance, boost::json::object> processInstanceStateMap;
+    std::map<process_identifier, boost::json::object> processInstanceStateMap;
 
 
   boost::json::object newState() {
@@ -201,33 +215,29 @@ class pcrl_to_automaton_translator{
   }
 
   boost::json::object stateForProcessInstance(const process_instance& instance) {
+    auto identifier = instance.identifier();
+    // lookup for process expression
+    auto eq = lookup_process_equation(identifier);
+
+    // TODO: allocate variables for this process instance
+    for (auto& param : eq.formal_parameters()) {
+      table.registerVar(static_cast<std::string>(param.name()).c_str(), pp(instance.identifier()), true);
+    }
 
     // check if state already exists
-    if (processInstanceStateMap.find(instance) != processInstanceStateMap.end()) {
-      return processInstanceStateMap[instance];
+    if (processInstanceStateMap.find(identifier) != processInstanceStateMap.end()) {
+      return processInstanceStateMap[identifier];
     } else {
 
       boost::json::object state{
         {"name", "state_for_" + pp(instance.identifier())}
       };
 
-      processInstanceStateMap[instance] = state;
+      processInstanceStateMap[identifier] = state;
 
-      auto identifier = instance.identifier();
-
-      // std::cout << "Processing process instance: " << pp(instance) << std::endl;
-
-      // lookup for process expression
-      auto eq = lookup_process_equation(identifier);
-      
       addStateToAutomaton(state);
-      
-      auto expression = eq.expression();
 
-      // TODO: allocate variables for this process instance
-      for (auto& param : eq.formal_parameters()) {
-        table.registerVar(static_cast<std::string>(param.name()).c_str(), pp(instance.identifier()), true);
-      }
+      auto expression = eq.expression();
 
       translateProcessExpression(expression, state["name"].as_string().c_str());
       return state;
@@ -250,6 +260,10 @@ class pcrl_to_automaton_translator{
     };
   }
 
+  jani_var_name getJaniVarForParam(const std::string& param, const std::string& processName) {
+    return processName + "_param_" + param;
+  }
+
   boost::json::array compute_assignments(const process_instance& instance) {
     data_expression_list arguments = instance.actual_parameters();
     auto eq = lookup_process_equation(instance.identifier());
@@ -258,7 +272,7 @@ class pcrl_to_automaton_translator{
     // calculate jani names to assign
     std::vector<jani_var_name> lhss;
     for (auto& param : parameters) {
-      lhss.push_back(table.getVariable(param.name()));
+      lhss.push_back(getJaniVarForParam(static_cast<std::string>(param.name()).c_str(), pp(instance.identifier())));
     }
 
     // calculate jani expressions to assign
@@ -280,6 +294,8 @@ class pcrl_to_automaton_translator{
         }
       );
     }
+
+    return assignments;
   }
 
 
@@ -296,7 +312,7 @@ class pcrl_to_automaton_translator{
       if(table.requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
         throw jani_translation_error("This variable requires reading, can't be used in an expression before it's used in an action receiving a value.");
       }
-      return boost::json::value(varName);
+      return boost::json::value(janiVar);
     }
     else if (data::sort_pos::is_positive_constant(e) ||
       data::sort_nat::is_natural_constant(e) ||
@@ -464,13 +480,11 @@ class pcrl_to_automaton_translator{
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
 
-      // clear table before possibly processing the process body
-      table.clearScopes();
+      auto assignments = compute_assignments(instance);
+
       table.enterScope();
       boost::json::object targetState = stateForProcessInstance(instance);
 
-      auto assignments = compute_assignments(instance);
-      // boost::json::array assignments({});
 
       addEdgeToAutomaton(
         makeSilentEdge(previousStateName, targetState["name"].as_string().c_str(), assignments=assignments)
@@ -481,17 +495,13 @@ class pcrl_to_automaton_translator{
   }
 
   public:
-    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call)
+    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, std::string automatonName)
     : initial_process_call(initial_process_call)
     {
       this->spec = spec;
 
-      std::string name;
-
-      name = pp(initial_process_call.identifier());
-
       jani_automaton = {
-        {"name", name},
+        {"name", automatonName},
         {"locations", boost::json::array()},
         {"edges", boost::json::array()}
       };
@@ -740,6 +750,7 @@ class syncs_matrix {
 class jani_translator
 {
   private:
+  std::map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
   // TODO: determine how to rewrite a spec so that all parallel compositions are in the initial process
@@ -859,7 +870,16 @@ class jani_translator
 
     mCRL2log(mcrl2::log::info) << "Translating process equation for: " << process::pp(procInst) << std::endl;
 
-    pcrl_to_automaton_translator translator(spec, procInst);
+    std::string automatonName;
+    if (automatonCounters.find(procInst.identifier()) == automatonCounters.end()) {
+      automatonCounters[procInst.identifier()] = 0;
+      automatonName = pp(procInst.identifier());
+    } else {
+      automatonName = pp(procInst.identifier()) + std::to_string(automatonCounters[procInst.identifier()]);
+      automatonCounters[procInst.identifier()]++;
+    }
+
+    pcrl_to_automaton_translator translator(spec, procInst, automatonName);
     auto automaton = translator.translate();
     return automaton;
   }
@@ -904,7 +924,7 @@ public:
       // std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
 
       jani_system_elements.push_back(
-          boost::json::value({{"automaton", pp(procInst)}})
+          boost::json::value({{"automaton", pp(procInst.identifier())}})
       );
       auto automaton = translate_process_equation(procInst);
       jani_automata.push_back(automaton);
