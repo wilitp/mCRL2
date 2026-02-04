@@ -82,8 +82,12 @@ class scope {
 using jani_var_name = std::string;
 using mcrl2_var_name = std::string;
 
-class symbol_table {
+class pcrl_to_automaton_translator{
 private:
+
+    std::string currentProcessName;
+
+    boost::json::array localVariables;
     std::vector<scope> scopes;
     // if a variable is declared already, we need to append a number since
     // automaton variables don't have scopes.
@@ -93,10 +97,6 @@ private:
     // keeps track of whether a variable needs to be read
     std::set<jani_var_name> readSet;
 public:
-
-    // initialize symbol table and other structures
-    symbol_table() {
-    }
 
     bool requiresReading(const jani_var_name& var) const {
       return readSet.contains(var);
@@ -111,20 +111,28 @@ public:
       auto it = scopes.begin();
       scopes.erase(it, scopes.end());
     }
-    void registerVar(const mcrl2_var_name& var, const std::string& processName, bool isParam = false) {
+    void registerVar(const variable& var, const std::string& processName, bool isParam = false) {
       scope& scope = scopes.back();
       std::string baseName;
+      auto varName = static_cast<std::string>(var.name());
       if (isParam) {
-        baseName = processName + "_param_" + var;
+        baseName = processName + "_param_" + varName;
       } else {
-        baseName = processName + "_" + var;
+        baseName = processName + "_" + varName;
       }
       uint& counter = counters[baseName];
       jani_var_name jani_var = baseName;
       if (counter > 0 && !isParam) {
         jani_var += "_" + std::to_string(counter);
       }
-      scope.table[var] = jani_var;
+
+      if (counter == 0 || !isParam) {
+        localVariables.push_back(boost::json::object{
+          {"name", jani_var},
+          {"type", convert_sort_expression(var.sort())}
+        });
+      }
+      scope.table[varName] = jani_var;
       counter++;
     }
     void enterScope() {
@@ -152,13 +160,8 @@ public:
       }
       throw jani_translation_error("Variable not found in symbol table: " + name);
     }
-};
-
-
-class pcrl_to_automaton_translator{
 
   private:
-    symbol_table table;
     process::process_specification spec;
     boost::json::object jani_automaton;
     const process_instance& initial_process_call;
@@ -215,13 +218,18 @@ class pcrl_to_automaton_translator{
   }
 
   boost::json::object stateForProcessInstance(const process_instance& instance) {
+
+
     auto identifier = instance.identifier();
+
+    currentProcessName = pp(identifier);
+
     // lookup for process expression
     auto eq = lookup_process_equation(identifier);
 
     // TODO: allocate variables for this process instance
     for (auto& param : eq.formal_parameters()) {
-      table.registerVar(static_cast<std::string>(param.name()).c_str(), pp(instance.identifier()), true);
+      registerVar(param, pp(instance.identifier()), true);
     }
 
     // check if state already exists
@@ -298,6 +306,38 @@ class pcrl_to_automaton_translator{
     return assignments;
   }
 
+  boost::json::value convert_sort_expression(const data::sort_expression& sort)
+  {
+    if (data::sort_bool::is_bool(sort))
+    {
+      return "bool";
+    }
+    else if (data::sort_int::is_int(sort))
+    {
+      return "int";
+    }
+    else if (data::sort_nat::is_nat(sort))
+    {
+      return boost::json::object{
+        { "base", "int" },
+        {"kind", "bounded"},
+        {"lower-bound", 0}
+      };
+    }
+    else if (data::sort_pos::is_pos(sort))
+    {
+      return boost::json::object{
+        {"base", "int"},
+        {"kind", "bounded"},
+        {"lower-bound", 1}
+      };
+    }
+    else
+    {
+      throw mcrl2::runtime_error("Jani only supports sorts bool, int, nat and pos. "
+        "It does not support sort " + pp(sort) + ".");
+    }
+  }
 
   boost::json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
   {
@@ -308,8 +348,8 @@ class pcrl_to_automaton_translator{
       // check the variable doesn't need reading
       // auto varName = static_cast<std::string>(atermpp::down_cast<data::variable>(e).name()).c_str();
       auto varName = pp(atermpp::down_cast<data::variable>(e).name());
-      auto janiVar = table.getVariable(varName);
-      if(table.requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
+      auto janiVar = getVariable(varName);
+      if(requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
         throw jani_translation_error("This variable requires reading, can't be used in an expression before it's used in an action receiving a value.");
       }
       return boost::json::value(janiVar);
@@ -482,13 +522,26 @@ class pcrl_to_automaton_translator{
 
       auto assignments = compute_assignments(instance);
 
-      table.enterScope();
+      enterScope();
       boost::json::object targetState = stateForProcessInstance(instance);
 
 
       addEdgeToAutomaton(
         makeSilentEdge(previousStateName, targetState["name"].as_string().c_str(), assignments=assignments)
       );
+      leaveScope();
+    } else if(is_sum(expr)) {
+      auto summation = down_cast<sum>(expr);
+
+      // TODO: allocate variables
+
+      enterScope();
+      for (const auto& var : summation.variables()) {
+        registerVar(var, currentProcessName);
+      }
+
+      translateProcessExpression(summation.operand(), previousStateName);
+      leaveScope();
     }  else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
@@ -516,6 +569,8 @@ class pcrl_to_automaton_translator{
       jani_automaton["initial-locations"] = boost::json::array({initialState["name"].as_string().c_str()});
 
       translateProcessExpression(initial_process_call, initialState["name"].as_string().c_str());
+
+      jani_automaton["variables"] = localVariables;
 
       return jani_automaton;
     };
