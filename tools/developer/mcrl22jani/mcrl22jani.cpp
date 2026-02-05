@@ -82,8 +82,12 @@ class scope {
 using jani_var_name = std::string;
 using mcrl2_var_name = std::string;
 
+using readingActionSet = std::set<std::string>;
+
 class pcrl_to_automaton_translator{
 private:
+
+    readingActionSet readingActions;
 
     std::string currentProcessName;
 
@@ -106,7 +110,6 @@ public:
       readSet.insert(var);
     }
 
-    // deletes every scope but the first one
     void clearScopes() {
       auto it = scopes.begin();
       scopes.erase(it, scopes.end());
@@ -231,7 +234,6 @@ public:
     // lookup for process expression
     auto eq = lookup_process_equation(identifier);
 
-    // TODO: allocate variables for this process instance
     for (auto& param : eq.formal_parameters()) {
       registerVar(param, pp(instance.identifier()), true);
     }
@@ -474,8 +476,24 @@ public:
         target = sequentialCompositionStack.back();
       }
 
+      // TODO: 
+      // - process data expressions in actions 
+      // - mark actions as "reading actions" if they contain variables that need reading
+
+      auto act = down_cast<action>(expr);
+      std::string actionName = pp(down_cast<action>(expr).label());
+      for (const auto& arg : act.arguments()) {
+        for (const auto& var : data::find_free_variables(arg)) {
+          auto varName = static_cast<std::string>(var.name());
+          auto janiVar = getVariable(varName);
+          if (requiresReading(janiVar)) {
+            readingActions.insert(actionName);
+          }
+        }
+      }
+
       addEdgeToAutomaton(
-        makeEdge(previousStateName, target["name"].as_string().c_str(), pp(down_cast<action>(expr).label()))
+        makeEdge(previousStateName, target["name"].as_string().c_str(), actionName)
       );
 
     } else if(is_delta(expr)) {
@@ -516,10 +534,6 @@ public:
       // translate right part
       translateProcessExpression(right, previousStateName);
     } else if(is_process_instance(expr)) {
-      // TODO:
-      // - get parameters and compute assignments from the actual parameters
-      // - convert expressions to jani, checking that no expression includes a variable to be read
-      // - update edge insertion code to include the assignments
 
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
@@ -536,8 +550,6 @@ public:
       leaveScope();
     } else if(is_sum(expr)) {
       auto summation = down_cast<sum>(expr);
-
-      // TODO: allocate variables
 
       enterScope();
       for (const auto& var : summation.variables()) {
@@ -557,6 +569,9 @@ public:
     {
       this->spec = spec;
 
+
+      readingActions = readingActionSet({});
+
       jani_automaton = {
         {"name", automatonName},
         {"locations", boost::json::array()},
@@ -564,6 +579,9 @@ public:
       };
     }
 
+    readingActionSet getReadingActions() const {
+      return readingActions;
+    }
 
     boost::json::object translate(){
 
@@ -596,6 +614,38 @@ class syncs_matrix {
 
 
   public:
+
+
+  // checks that all sync vectors include
+  // exactly one writing action.
+  // 0 would result in reading actions getting just the initial value
+  // more than one would result in writing multiple values to the same channel
+  bool checkSyncs(readingActionSet readingActions) {
+    for (auto& row : matrix) {
+      
+      uint writingActionCount = 0;
+      uint readingActionCount = 0;
+
+      for (auto& act : row.first) {
+        if (act == "null") {
+          continue;
+        }
+        if (readingActions.contains(act)) {
+          readingActionCount += 1;
+        } else {
+          writingActionCount += 1;
+
+        }
+      }
+
+      if (readingActionCount > 0 && writingActionCount != 1) {
+        return false;
+      }
+    }
+
+    return true;
+    
+  }
 
   boost::json::value getResult(std::multiset<std::string> multiAction, std::set<std::string>& jani_multiactions_set) {
     std::string serializedMultiAction;
@@ -813,10 +863,10 @@ class syncs_matrix {
 class jani_translator
 {
   private:
+  readingActionSet readingActions;
   std::map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
-  // TODO: determine how to rewrite a spec so that all parallel compositions are in the initial process
   std::set<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
     if (is_process_instance(expr)) {
       return {down_cast<process_instance>(expr)};
@@ -921,6 +971,7 @@ class jani_translator
     }
   }
 
+
   syncs_matrix buildSyncsMatrix() {
     auto initialProcess = spec.init();
 
@@ -944,6 +995,8 @@ class jani_translator
 
     pcrl_to_automaton_translator translator(spec, procInst, automatonName);
     auto automaton = translator.translate();
+    auto automatonReadingActions = translator.getReadingActions();
+    readingActions.insert(automatonReadingActions.begin(), automatonReadingActions.end());
     return automaton;
   }
 
@@ -973,9 +1026,11 @@ public:
 
   // constructor
   jani_translator(const process::process_specification& specification)
-    : spec(specification){
-
+    : spec(specification) {
+      readingActions = readingActionSet();
     }
+
+  
 
   boost::json::object translate_process_specification()
   {
@@ -994,8 +1049,19 @@ public:
       jani_automata.push_back(automaton);
     }
 
+    bool syncsValid = syncsMatrix.checkSyncs(readingActions);
+
+    // // TODO: report the problem properly
+    if (!syncsValid) {
+      throw jani_translation_error("there's an issue with the syncs matrix");
+    }
+
     auto jsonMatrix = syncsMatrix.toJsonArray(jani_multiactions_set);
 
+    // multiactions must be explicitly made a communication
+    // "accidental multiactions are not allowed"
+    // TODO: throw a proper error instead of asserting
+    assert(jani_multiactions_set.size() == 0);
     for (auto& multiaction : jani_multiactions_set) {
       jani_actions.push_back(
         boost::json::object{
