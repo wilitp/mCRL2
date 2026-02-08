@@ -84,6 +84,40 @@ using mcrl2_var_name = std::string;
 
 using readingActionSet = std::set<std::string>;
 
+
+boost::json::value convert_sort_expression(const data::sort_expression& sort)
+{
+  if (data::sort_bool::is_bool(sort))
+  {
+    return "bool";
+  }
+  else if (data::sort_int::is_int(sort))
+  {
+    return "int";
+  }
+  else if (data::sort_nat::is_nat(sort))
+  {
+    return boost::json::object{
+      { "base", "int" },
+      {"kind", "bounded"},
+      {"lower-bound", 0}
+    };
+  }
+  else if (data::sort_pos::is_pos(sort))
+  {
+    return boost::json::object{
+      {"base", "int"},
+      {"kind", "bounded"},
+      {"lower-bound", 1}
+    };
+  }
+  else
+  {
+    throw mcrl2::runtime_error("Jani only supports sorts bool, int, nat and pos. "
+      "It does not support sort " + pp(sort) + ".");
+  }
+}
+
 class pcrl_to_automaton_translator{
 private:
 
@@ -104,6 +138,10 @@ public:
 
     bool requiresReading(const jani_var_name& var) const {
       return readSet.contains(var);
+    }
+
+    void unmarkForReading(const jani_var_name& var) {
+      readSet.erase(var);
     }
 
     void markForReading(const jani_var_name& var) {
@@ -258,11 +296,12 @@ public:
     }
   }
 
-  boost::json::object makeEdge(const std::string& source, const std::string& target, const std::string& action) {
+  boost::json::object makeEdge(const std::string& source, const std::string& target, const std::string& action, const boost::json::array& assignments = boost::json::array({})) {
     return boost::json::object{
       {"action", action},
       {"location", source},
-      {"destinations", boost::json::array({boost::json::object({{"location", target}})})}
+      {"destinations", boost::json::array({boost::json::object({{"location", target}})})},
+      {"assignments", assignments}
     };
   }
 
@@ -276,9 +315,46 @@ public:
 
   jani_var_name getJaniVarForParam(const std::string& param, const std::string& processName) {
     return processName + "_param_" + param;
+
   }
 
-  boost::json::array compute_assignments(const process_instance& instance) {
+  boost::json::array compute_read_assignments(const action& act) {
+    boost::json::array assignments;
+    uint i = 0;
+    auto actionName = pp(act.label());
+    for (auto& arg : act.arguments()) {
+      auto errorMsg = "The action " + actionName + " has been marked as a reading action and can only get quantified, unread variables as arguments."
+          "the offending expression is " + pp(arg) + " of order " + std::to_string(i + 1) + ".";
+
+      if(!is_variable(arg)) {
+        throw jani_translation_error(
+          errorMsg
+        );
+      } 
+
+      
+      auto var = down_cast<variable>(arg);
+
+      jani_var_name jani_var = getVariable(pp(var.name()));
+      if(!requiresReading(jani_var)) {
+        throw jani_translation_error(errorMsg + " Variable was not marked for reading");
+      }
+
+      // assign from global transient variable [actionName][index or signature parameter]
+      assignments.push_back(
+        boost::json::object({
+          {"ref", getVariable(var.name())},
+          {"value", actionName + "_" + std::to_string(i)},
+          {"index", 1}
+        })
+      );
+      i++;
+    }
+
+    return assignments;
+  }
+
+  boost::json::array compute_process_assignments(const process_instance& instance) {
     data_expression_list arguments = instance.actual_parameters();
     auto eq = lookup_process_equation(instance.identifier());
     variable_list parameters = eq.formal_parameters();
@@ -312,38 +388,6 @@ public:
     return assignments;
   }
 
-  boost::json::value convert_sort_expression(const data::sort_expression& sort)
-  {
-    if (data::sort_bool::is_bool(sort))
-    {
-      return "bool";
-    }
-    else if (data::sort_int::is_int(sort))
-    {
-      return "int";
-    }
-    else if (data::sort_nat::is_nat(sort))
-    {
-      return boost::json::object{
-        { "base", "int" },
-        {"kind", "bounded"},
-        {"lower-bound", 0}
-      };
-    }
-    else if (data::sort_pos::is_pos(sort))
-    {
-      return boost::json::object{
-        {"base", "int"},
-        {"kind", "bounded"},
-        {"lower-bound", 1}
-      };
-    }
-    else
-    {
-      throw mcrl2::runtime_error("Jani only supports sorts bool, int, nat and pos. "
-        "It does not support sort " + pp(sort) + ".");
-    }
-  }
 
   boost::json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
   {
@@ -476,24 +520,40 @@ public:
         target = sequentialCompositionStack.back();
       }
 
-      // TODO: 
-      // - process data expressions in actions 
-      // - mark actions as "reading actions" if they contain variables that need reading
+      bool actionReads = false;
 
       auto act = down_cast<action>(expr);
       std::string actionName = pp(down_cast<action>(expr).label());
+      std::vector<jani_var_name> varsToUnmark;
       for (const auto& arg : act.arguments()) {
         for (const auto& var : data::find_free_variables(arg)) {
           auto varName = static_cast<std::string>(var.name());
           auto janiVar = getVariable(varName);
           if (requiresReading(janiVar)) {
+            actionReads = true; 
+            varsToUnmark.push_back(janiVar);
             readingActions.insert(actionName);
           }
         }
       }
 
+      // TODO:
+      // - compute assignments related to READING if applicable
+      boost::json::array assignments({});
+      if (actionReads) {
+        assignments = compute_read_assignments(act);
+      }
+
+
+      for (auto& janiVar : varsToUnmark) {
+        unmarkForReading(janiVar);
+      }
+
+      // TODO:
+      // - somehow compute assignments realted to writing, probably need to compute the syncs before translating automata
+
       addEdgeToAutomaton(
-        makeEdge(previousStateName, target["name"].as_string().c_str(), actionName)
+        makeEdge(previousStateName, target["name"].as_string().c_str(), actionName, assignments)
       );
 
     } else if(is_delta(expr)) {
@@ -538,7 +598,7 @@ public:
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
 
-      auto assignments = compute_assignments(instance);
+      auto assignments = compute_process_assignments(instance);
 
       enterScope();
       boost::json::object targetState = stateForProcessInstance(instance);
@@ -615,12 +675,24 @@ class syncs_matrix {
 
   public:
 
+  std::string pp_action_vector(std::vector<std::string> actions) {
+    std::string s="[";
+    bool first=true;
+    for (const auto& act : actions)
+    {
+      s=s+ (first?"":", ") + act;
+      first=false;
+    }
+    s=s+ "]";
+    return s;
+  }
+
 
   // checks that all sync vectors include
   // exactly one writing action.
   // 0 would result in reading actions getting just the initial value
   // more than one would result in writing multiple values to the same channel
-  bool checkSyncs(readingActionSet readingActions) {
+  void checkSyncs(readingActionSet readingActions) {
     for (auto& row : matrix) {
       
       uint writingActionCount = 0;
@@ -639,19 +711,29 @@ class syncs_matrix {
       }
 
       if (readingActionCount > 0 && writingActionCount != 1) {
-        return false;
+        throw jani_translation_error(
+          "Synchronization " + pp_action_vector(row.first) + " | " + formatResult(row.second) + " "
+          "is illegal as there are reading actions involved but also more than one writing action."
+
+        );
+      }
+
+      if (row.second.size() > 1) {
+        throw jani_translation_error(
+          "Synchronization " + pp_action_vector(row.first) + " | " + formatResult(row.second) + " "
+          "is illegal, all multiactions should be part of a communication. If this multiactions does not serve any "
+          "function to your model, please disallow it."
+        );
       }
     }
-
-    return true;
     
   }
 
-  boost::json::value getResult(std::multiset<std::string> multiAction, std::set<std::string>& jani_multiactions_set) {
+  std::string formatResult(std::multiset<std::string> multiAction) {
     std::string serializedMultiAction;
     
     if (multiAction.empty()) {
-      return boost::json::value(nullptr);
+      return nullptr;
     } 
 
     serializedMultiAction = "";
@@ -664,6 +746,13 @@ class syncs_matrix {
       first = false;
     }
 
+    return serializedMultiAction;
+
+  }
+
+  boost::json::value getResult(std::multiset<std::string> multiAction, std::set<std::string>& jani_multiactions_set) {
+    std::string serializedMultiAction = formatResult(multiAction);
+    
     if (multiAction.size() > 1) {
       jani_multiactions_set.insert(serializedMultiAction);
     }
@@ -684,8 +773,6 @@ class syncs_matrix {
 
     return synch;
   }
-
-
 
   boost::json::array toJsonArray(std::set<std::string>& jani_multiactions_set) {
       boost::json::array jsonArray;
@@ -1000,10 +1087,61 @@ class jani_translator
     return automaton;
   }
 
+  boost::json::value initial_value_for_sort(sort_expression sort) {
+    if (data::sort_bool::is_bool(sort))
+    {
+      return false;
+    }
+    else if (data::sort_int::is_int(sort))
+    {
+      return 0;
+    }
+    else if (data::sort_nat::is_nat(sort))
+    {
+      return 0;
+    }
+    else if (data::sort_pos::is_pos(sort))
+    {
+      return 0;
+    }
+    else
+    {
+      throw jani_translation_error("Jani only supports sorts bool, int, nat and pos. "
+        "It does not support sort " + pp(sort) + ".");
+    }
+  }
+
+  void addTransientVars() {
+    // for now, just add all action labels from the specification
+    for (const auto& actionLabel : spec.action_labels()) {
+
+      auto actionName = pp(actionLabel.name());
+
+      // allocate transient variables for this actions inputs
+      if (readingActions.contains(actionName)) {
+        uint i = 0;
+        for(const auto& sort : actionLabel.sorts() ) {
+          auto jani_type = convert_sort_expression(sort);
+          auto initial_value = initial_value_for_sort(sort);
+
+
+          jani_variables.push_back(boost::json::object(
+            {
+              {"name", actionName + "_" + std::to_string(i)},
+              {"initial-value", initial_value},
+              {"type", jani_type}
+            }
+          ));
+          i++;
+        }
+
+      }
+    }
+  }
   void translateActions() {
     // for now, just add all action labels from the specification
-    // TODO: add global transient variables for communicating actions
     for (const auto& actionLabel : spec.action_labels()) {
+
       jani_actions.push_back(
         boost::json::object{
           {"name", pp(actionLabel)}
@@ -1035,8 +1173,8 @@ public:
   boost::json::object translate_process_specification()
   {
 
-    translateActions();
     std::set<process_instance> prclProcesses = collectPcrlProcesses();
+    translateActions();
     auto syncsMatrix = buildSyncsMatrix();
 
     for (const auto& procInst : prclProcesses) {
@@ -1049,26 +1187,24 @@ public:
       jani_automata.push_back(automaton);
     }
 
-    bool syncsValid = syncsMatrix.checkSyncs(readingActions);
+    syncsMatrix.checkSyncs(readingActions);
 
-    // // TODO: report the problem properly
-    if (!syncsValid) {
-      throw jani_translation_error("there's an issue with the syncs matrix");
-    }
 
     auto jsonMatrix = syncsMatrix.toJsonArray(jani_multiactions_set);
 
     // multiactions must be explicitly made a communication
     // "accidental multiactions are not allowed"
     // TODO: throw a proper error instead of asserting
-    assert(jani_multiactions_set.size() == 0);
-    for (auto& multiaction : jani_multiactions_set) {
-      jani_actions.push_back(
-        boost::json::object{
-          {"name", multiaction}
-        }
-      );
-    }
+    // assert(jani_multiactions_set.size() == 0);
+    // for (auto& multiaction : jani_multiactions_set) {
+    //   jani_actions.push_back(
+    //     boost::json::object{
+    //       {"name", multiaction}
+    //     }
+    //   );
+    // }
+
+    addTransientVars();
 
     return boost::json::object(
       {
