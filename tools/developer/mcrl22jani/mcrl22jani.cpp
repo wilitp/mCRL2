@@ -118,8 +118,14 @@ boost::json::value convert_sort_expression(const data::sort_expression& sort)
   }
 }
 
+using incomplete_edge_assignments = std::vector<std::pair<boost::json::object*, std::vector<boost::json::value>>>;
+
+using write_reads_map = std::map<std::string, std::vector<std::string>>;
+
 class pcrl_to_automaton_translator{
 private:
+
+    incomplete_edge_assignments& incompleteEdgeAssignments;
 
     readingActionSet readingActions;
 
@@ -551,10 +557,22 @@ public:
 
       // TODO:
       // - somehow compute assignments realted to writing, probably need to compute the syncs before translating automata
+      auto edge = makeEdge(previousStateName, target["name"].as_string().c_str(), actionName, assignments);
 
-      addEdgeToAutomaton(
-        makeEdge(previousStateName, target["name"].as_string().c_str(), actionName, assignments)
-      );
+      if (!actionReads) {
+        // this is a writing action, so track it's edge and assignments
+
+        std::vector<boost::json::value> janiArgs;
+
+        for (auto& arg : act.arguments()) {
+          janiArgs.push_back(convert_data_expression(arg));
+        }
+
+        incompleteEdgeAssignments.push_back(std::make_pair(&edge,janiArgs));
+      }
+
+
+      addEdgeToAutomaton(edge);
 
     } else if(is_delta(expr)) {
       // TODO: check if we can avoid adding a tau transition to delta state here
@@ -624,8 +642,8 @@ public:
   }
 
   public:
-    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, std::string automatonName)
-    : initial_process_call(initial_process_call)
+    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, std::string automatonName, incomplete_edge_assignments incompleteEdgeAssignments)
+    : initial_process_call(initial_process_call), incompleteEdgeAssignments(incompleteEdgeAssignments)
     {
       this->spec = spec;
 
@@ -950,6 +968,7 @@ class syncs_matrix {
 class jani_translator
 {
   private:
+  incomplete_edge_assignments incompleteEdgeAssignments;
   readingActionSet readingActions;
   std::map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
@@ -1080,7 +1099,7 @@ class jani_translator
       automatonCounters[procInst.identifier()]++;
     }
 
-    pcrl_to_automaton_translator translator(spec, procInst, automatonName);
+    pcrl_to_automaton_translator translator(spec, procInst, automatonName, incompleteEdgeAssignments);
     auto automaton = translator.translate();
     auto automatonReadingActions = translator.getReadingActions();
     readingActions.insert(automatonReadingActions.begin(), automatonReadingActions.end());
@@ -1206,6 +1225,8 @@ public:
 
     addTransientVars();
 
+    addRandomThingToEdges();
+
     return boost::json::object(
       {
         {"name", "mCRL2_to_JANI_model"},
@@ -1222,6 +1243,28 @@ public:
       }
     );
   }
+
+  void addRandomThingToEdges() {
+    for (auto& incompleteEdge : incompleteEdgeAssignments) {
+      auto edge = *(incompleteEdge.first);
+      edge["lalala"] = "hola";
+
+    }
+  }
+
+
+  /*
+  when processing a reading action, include its edge in a data structure that includes:
+  - a reference to the edge
+  - the (JANI) expressions it needs to assign
+  
+  later on, when we know which actions are reads, and which ones are writes, map every writing action
+  to the set of reading actions that possible read it's inputs according to the syncs matrix.
+
+  having this two data structures read (the edge tracking one, and the write -> reads map), we can
+  add the remaining assignments to the edges for the writing actions.
+  */
+
 
 };
 
