@@ -56,12 +56,14 @@ using namespace mcrl2::data;
 using namespace mcrl2::data::detail;
 using namespace mcrl2::lps;
 using namespace mcrl2::process;
+using namespace std;
+using namespace boost;
 
 
 class jani_translation_error : public mcrl2::runtime_error
 {
   public:
-  jani_translation_error(const std::string& message)
+  jani_translation_error(const string& message)
     : mcrl2::runtime_error(message)
   {}
 };
@@ -71,7 +73,7 @@ class scope {
   public:
     // maps variable names to their allocated local 
     // variable in the JANI automaton.
-    std::map<std::string, std::string> table;
+    map<string, string> table;
     bool isProcessScope = false;
 
     scope() = default;
@@ -79,13 +81,13 @@ class scope {
     scope(bool isProcessScope) : isProcessScope(isProcessScope) {}
 };
 
-using jani_var_name = std::string;
-using mcrl2_var_name = std::string;
+using jani_var_name = string;
+using mcrl2_var_name = string;
 
-using readingActionSet = std::set<std::string>;
+using readingActionSet = set<string>;
 
 
-boost::json::value convert_sort_expression(const data::sort_expression& sort)
+json::value convert_sort_expression(const data::sort_expression& sort)
 {
   if (data::sort_bool::is_bool(sort))
   {
@@ -97,7 +99,7 @@ boost::json::value convert_sort_expression(const data::sort_expression& sort)
   }
   else if (data::sort_nat::is_nat(sort))
   {
-    return boost::json::object{
+    return json::object{
       { "base", "int" },
       {"kind", "bounded"},
       {"lower-bound", 0}
@@ -105,7 +107,7 @@ boost::json::value convert_sort_expression(const data::sort_expression& sort)
   }
   else if (data::sort_pos::is_pos(sort))
   {
-    return boost::json::object{
+    return json::object{
       {"base", "int"},
       {"kind", "bounded"},
       {"lower-bound", 1}
@@ -118,9 +120,9 @@ boost::json::value convert_sort_expression(const data::sort_expression& sort)
   }
 }
 
-using incomplete_edge_assignments = std::vector<std::pair<boost::json::object*, std::vector<boost::json::value>>>;
+using incomplete_edge_assignments = vector<pair<json::object*, vector<json::value>>>;
 
-using write_reads_map = std::map<std::string, std::vector<std::string>>;
+using write_reads_map = map<string, vector<string>>;
 
 class pcrl_to_automaton_translator{
 private:
@@ -129,17 +131,17 @@ private:
 
     readingActionSet readingActions;
 
-    std::string currentProcessName;
+    string currentProcessName;
 
-    boost::json::array localVariables;
-    std::vector<scope> scopes;
+    json::array localVariables;
+    vector<scope> scopes;
     // if a variable is declared already, we need to append a number since
     // automaton variables don't have scopes.
     // Note: this is redundant, since variables in the table will have the numbers,
     // this just makes it faster to find the next available number.
-    std::map<jani_var_name, uint> counters;
+    map<jani_var_name, uint> counters;
     // keeps track of whether a variable needs to be read
-    std::set<jani_var_name> readSet;
+    set<jani_var_name> readSet;
 public:
 
     bool requiresReading(const jani_var_name& var) const {
@@ -158,10 +160,10 @@ public:
       auto it = scopes.begin();
       scopes.erase(it, scopes.end());
     }
-    void registerVar(const variable& var, const std::string& processName, bool isParam = false) {
+    void registerVar(const variable& var, const string& processName, bool isParam = false) {
       scope& scope = scopes.back();
-      std::string baseName;
-      auto varName = static_cast<std::string>(var.name());
+      string baseName;
+      auto varName = static_cast<string>(var.name());
       if (isParam) {
         baseName = processName + "_param_" + varName;
       } else {
@@ -174,11 +176,11 @@ public:
         markForReading(jani_var);
       }
       if (counter > 0 && !isParam) {
-        jani_var += "_" + std::to_string(counter);
+        jani_var += "_" + to_string(counter);
       }
 
       if (counter == 0 || !isParam) {
-        localVariables.push_back(boost::json::object{
+        localVariables.push_back(json::object{
           {"name", jani_var},
           {"type", convert_sort_expression(var.sort())}
         });
@@ -214,20 +216,20 @@ public:
 
   private:
     process::process_specification spec;
-    boost::json::object jani_automaton;
+    json::object jani_automaton;
     const process_instance& initial_process_call;
     // keeps track of states in sequential compositions
-    std::vector<boost::json::object> sequentialCompositionStack; 
+    vector<json::object> sequentialCompositionStack; 
     uint stateCounter = 0;
-    boost::json::object deltaState;
+    json::object deltaState;
 
-    const std::string DELTA_STATE_NAME = "delta_state";
-    std::map<process_identifier, boost::json::object> processInstanceStateMap;
+    const string DELTA_STATE_NAME = "delta_state";
+    map<process_identifier, json::object> processInstanceStateMap;
 
 
-  boost::json::object newState() {
-     boost::json::object state{
-      {"name", "state_" + std::to_string(stateCounter)}
+  json::object newState() {
+     json::object state{
+      {"name", "state_" + to_string(stateCounter)}
     };
 
     stateCounter++;
@@ -238,23 +240,23 @@ public:
   
   void ensureDeltaState() {
     if (deltaState.empty()) {
-      deltaState = boost::json::object{
+      deltaState = json::object{
         {"name", DELTA_STATE_NAME}
       };
       addStateToAutomaton(deltaState);
     }
   }
 
-  void addStateToAutomaton(const boost::json::object& state) {
+  void addStateToAutomaton(const json::object& state) {
     jani_automaton["locations"].as_array().push_back(state);
   }
 
-  void addEdgeToAutomaton(const boost::json::object& edge) {
+  void addEdgeToAutomaton(const json::object& edge) {
     jani_automaton["edges"].as_array().push_back(edge);
   }
 
   process_equation& lookup_process_equation(const process_identifier& id) {
-    auto it = std::find_if(spec.equations().begin(), spec.equations().end(),
+    auto it = find_if(spec.equations().begin(), spec.equations().end(),
             [&id](const process_equation& eqn) {
               return eqn.identifier() == id;
             });
@@ -268,7 +270,7 @@ public:
 
   }
 
-  boost::json::object stateForProcessInstance(const process_instance& instance) {
+  json::object stateForProcessInstance(const process_instance& instance) {
 
 
     auto identifier = instance.identifier();
@@ -287,7 +289,7 @@ public:
       return processInstanceStateMap[identifier];
     } else {
 
-      boost::json::object state{
+      json::object state{
         {"name", "state_for_" + pp(instance.identifier())}
       };
 
@@ -302,35 +304,35 @@ public:
     }
   }
 
-  boost::json::object makeEdge(const std::string& source, const std::string& target, const std::string& action, const boost::json::array& assignments = boost::json::array({})) {
-    return boost::json::object{
+  json::object makeEdge(const string& source, const string& target, const string& action, const json::array& assignments = json::array({})) {
+    return json::object{
       {"action", action},
       {"location", source},
-      {"destinations", boost::json::array({boost::json::object({{"location", target}})})},
+      {"destinations", json::array({json::object({{"location", target}})})},
       {"assignments", assignments}
     };
   }
 
-  boost::json::object makeSilentEdge(const std::string& source, const std::string& target, const boost::json::array& assignments = boost::json::array({})) {
-    return boost::json::object{
+  json::object makeSilentEdge(const string& source, const string& target, const json::array& assignments = json::array({})) {
+    return json::object{
       {"location", source},
-      {"destinations", boost::json::array({boost::json::object({{"location", target}})})},
+      {"destinations", json::array({json::object({{"location", target}})})},
       {"assignments", assignments}
     };
   }
 
-  jani_var_name getJaniVarForParam(const std::string& param, const std::string& processName) {
+  jani_var_name getJaniVarForParam(const string& param, const string& processName) {
     return processName + "_param_" + param;
 
   }
 
-  boost::json::array compute_read_assignments(const action& act) {
-    boost::json::array assignments;
+  json::array compute_read_assignments(const action& act) {
+    json::array assignments;
     uint i = 0;
     auto actionName = pp(act.label());
     for (auto& arg : act.arguments()) {
       auto errorMsg = "The action " + actionName + " has been marked as a reading action and can only get quantified, unread variables as arguments."
-          "the offending expression is " + pp(arg) + " of order " + std::to_string(i + 1) + ".";
+          "the offending expression is " + pp(arg) + " of order " + to_string(i + 1) + ".";
 
       if(!is_variable(arg)) {
         throw jani_translation_error(
@@ -348,9 +350,9 @@ public:
 
       // assign from global transient variable [actionName][index or signature parameter]
       assignments.push_back(
-        boost::json::object({
+        json::object({
           {"ref", getVariable(var.name())},
-          {"value", actionName + "_" + std::to_string(i)},
+          {"value", actionName + "_" + to_string(i)},
           {"index", 1}
         })
       );
@@ -360,19 +362,19 @@ public:
     return assignments;
   }
 
-  boost::json::array compute_process_assignments(const process_instance& instance) {
+  json::array compute_process_assignments(const process_instance& instance) {
     data_expression_list arguments = instance.actual_parameters();
     auto eq = lookup_process_equation(instance.identifier());
     variable_list parameters = eq.formal_parameters();
 
     // calculate jani names to assign
-    std::vector<jani_var_name> lhss;
+    vector<jani_var_name> lhss;
     for (auto& param : parameters) {
-      lhss.push_back(getJaniVarForParam(static_cast<std::string>(param.name()).c_str(), pp(instance.identifier())));
+      lhss.push_back(getJaniVarForParam(static_cast<string>(param.name()).c_str(), pp(instance.identifier())));
     }
 
     // calculate jani expressions to assign
-    std::vector<boost::json::value> rhss;
+    vector<json::value> rhss;
     for (auto& arg : arguments) {
       rhss.push_back(convert_data_expression(arg));
     }
@@ -380,11 +382,11 @@ public:
     assert(lhss.size() == rhss.size());
 
     // merge them into the assignments array
-    boost::json::array assignments;
+    json::array assignments;
 
     for (uint i=0; i < lhss.size(); i++){
       assignments.push_back(
-        boost::json::object {
+        json::object {
           {"ref", lhss[i]},
           {"value", rhss[i]}
         }
@@ -395,25 +397,25 @@ public:
   }
 
 
-  boost::json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
+  json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
   {
     rewriter r;
     const data::data_expression e = r(e_in);
     if (is_variable(e))
     {
       // check the variable doesn't need reading
-      // auto varName = static_cast<std::string>(atermpp::down_cast<data::variable>(e).name()).c_str();
+      // auto varName = static_cast<string>(atermpp::down_cast<data::variable>(e).name()).c_str();
       auto varName = pp(atermpp::down_cast<data::variable>(e).name());
       auto janiVar = getVariable(varName);
       if(requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
         throw jani_translation_error("This variable requires reading, can't be used in an expression before it's used in an action receiving a value.");
       }
-      return boost::json::value(janiVar);
+      return json::value(janiVar);
     }
     else if (data::sort_pos::is_positive_constant(e) ||
       data::sort_nat::is_natural_constant(e) ||
       data::sort_int::is_integer_constant(e)) {
-      return std::stoi(pp(e));
+      return stoi(pp(e));
     }
     else if (data::sort_bool::is_true_function_symbol(e)) {
       return true;
@@ -424,7 +426,7 @@ public:
     else if (data::sort_bool::is_not_application(e))
     {
       const data::application& appl = atermpp::down_cast<data::application>(e);
-      return boost::json::object{
+      return json::object{
         {"op", reinterpret_cast<const char*>(u8"¬")},
         {"exp", convert_data_expression(appl[0], topLevel=false)}
       };
@@ -432,7 +434,7 @@ public:
     else if (is_greater_application(e)) // > is not supported within jani, and thus should be flipped
     {
       const data::application& appl = atermpp::down_cast<data::application>(e);
-      return boost::json::object{
+      return json::object{
         {"left", convert_data_expression(appl[1], topLevel=false)},
         {"op", "<"},
         {"right", convert_data_expression(appl[0], topLevel=false)}
@@ -441,7 +443,7 @@ public:
     else if (is_greater_equal_application(e)) // >= is not supported within jani, and thus should be flipped
     {
       const data::application& appl = atermpp::down_cast<data::application>(e);
-      return boost::json::object{
+      return json::object{
         {"left", convert_data_expression(appl[1], topLevel=false)},
         {"op", reinterpret_cast<const char*>(u8"≤")},
         {"right", convert_data_expression(appl[0], topLevel=false)}
@@ -449,7 +451,7 @@ public:
     }
     else if (data::sort_bool::is_implies_application(e)) {
       const data::application& appl = atermpp::down_cast<data::application>(e);
-      return boost::json::object{
+      return json::object{
         {"op", "ite"},
         {"if", convert_data_expression(appl[0], topLevel=false)},
         {"then", convert_data_expression(appl[1], topLevel=false)},
@@ -460,14 +462,14 @@ public:
       data::sort_real::is_ceil_application(e))
     {
       const data::application& appl = atermpp::down_cast<data::application>(e);
-      return boost::json::object{
+      return json::object{
         {"op", pp(appl.head())},
         {"exp", convert_data_expression(appl[0], topLevel=false)}
       };
     }
     else if (data::is_application(e) && e.size() == 3) {
       const data::application& appl = atermpp::down_cast<data::application>(e);
-      return boost::json::object{
+      return json::object{
         {"left", convert_data_expression(appl[0], topLevel=false)},
         {"op", convert_operator_to_jani(appl.head())},
         {"right", convert_data_expression(appl[1], topLevel=false)}
@@ -481,8 +483,8 @@ public:
   }
 
 
-  std::string convert_operator_to_jani(const data::data_expression& opid) const {
-    if (std::string op = mcrl2::data::pp(opid);
+  string convert_operator_to_jani(const data::data_expression& opid) const {
+    if (string op = mcrl2::data::pp(opid);
       "!=" == op) 
     {
       return reinterpret_cast<const char*>(u8"≠");
@@ -513,11 +515,11 @@ public:
     }
   }
 
-  void translateProcessExpression(const process_expression& expr, std::string previousStateName) {
+  void translateProcessExpression(const process_expression& expr, string previousStateName) {
 
     if(is_action(expr)) {
 
-      boost::json::object target;
+      json::object target;
 
       if (sequentialCompositionStack.empty()) {
         target = newState();
@@ -529,11 +531,11 @@ public:
       bool actionReads = false;
 
       auto act = down_cast<action>(expr);
-      std::string actionName = pp(down_cast<action>(expr).label());
-      std::vector<jani_var_name> varsToUnmark;
+      string actionName = pp(down_cast<action>(expr).label());
+      vector<jani_var_name> varsToUnmark;
       for (const auto& arg : act.arguments()) {
         for (const auto& var : data::find_free_variables(arg)) {
-          auto varName = static_cast<std::string>(var.name());
+          auto varName = static_cast<string>(var.name());
           auto janiVar = getVariable(varName);
           if (requiresReading(janiVar)) {
             actionReads = true; 
@@ -545,7 +547,7 @@ public:
 
       // TODO:
       // - compute assignments related to READING if applicable
-      boost::json::array assignments({});
+      json::array assignments({});
       if (actionReads) {
         assignments = compute_read_assignments(act);
       }
@@ -556,23 +558,25 @@ public:
       }
 
       // TODO:
-      // - somehow compute assignments realted to writing, probably need to compute the syncs before translating automata
-      auto edge = makeEdge(previousStateName, target["name"].as_string().c_str(), actionName, assignments);
+      // - somehow compute assignments related to writing, probably need to compute the syncs before translating automata
 
       if (!actionReads) {
-        // this is a writing action, so track it's edge and assignments
+        // this is a writing action, so track its assignments
+        // so as to assign to transient variables later
 
-        std::vector<boost::json::value> janiArgs;
-
+        uint i = 0;
         for (auto& arg : act.arguments()) {
-          janiArgs.push_back(convert_data_expression(arg));
+          assignments.push_back(
+            json::object({
+              {"ref", to_string(i)},
+              {"value", convert_data_expression(arg)}
+            })
+          );
+          i++;
         }
-
-        incompleteEdgeAssignments.push_back(std::make_pair(&edge,janiArgs));
       }
 
-
-      addEdgeToAutomaton(edge);
+      addEdgeToAutomaton(makeEdge(previousStateName, target["name"].as_string().c_str(), actionName, assignments));
 
     } else if(is_delta(expr)) {
       // TODO: check if we can avoid adding a tau transition to delta state here
@@ -587,7 +591,7 @@ public:
       auto left = process::seq(expr).left();
       auto right = process::seq(expr).right();
 
-      boost::json::object intermediateState = newState();
+      json::object intermediateState = newState();
       addStateToAutomaton(intermediateState);
 
       // push intermediate state to stack
@@ -619,7 +623,7 @@ public:
       auto assignments = compute_process_assignments(instance);
 
       enterScope();
-      boost::json::object targetState = stateForProcessInstance(instance);
+      json::object targetState = stateForProcessInstance(instance);
 
 
       addEdgeToAutomaton(
@@ -642,7 +646,7 @@ public:
   }
 
   public:
-    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, std::string automatonName, incomplete_edge_assignments incompleteEdgeAssignments)
+    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, string automatonName, incomplete_edge_assignments incompleteEdgeAssignments)
     : initial_process_call(initial_process_call), incompleteEdgeAssignments(incompleteEdgeAssignments)
     {
       this->spec = spec;
@@ -652,8 +656,8 @@ public:
 
       jani_automaton = {
         {"name", automatonName},
-        {"locations", boost::json::array()},
-        {"edges", boost::json::array()}
+        {"locations", json::array()},
+        {"edges", json::array()}
       };
     }
 
@@ -661,12 +665,12 @@ public:
       return readingActions;
     }
 
-    boost::json::object translate(){
+    json::object translate(){
 
       auto initialState = newState();
       addStateToAutomaton(initialState);
 
-      jani_automaton["initial-locations"] = boost::json::array({initialState["name"].as_string().c_str()});
+      jani_automaton["initial-locations"] = json::array({initialState["name"].as_string().c_str()});
 
       translateProcessExpression(initial_process_call, initialState["name"].as_string().c_str());
 
@@ -676,13 +680,12 @@ public:
     };
 };
 
-using sync_vector = std::pair<std::vector<std::string>, std::multiset<std::string>>;
-using inner_matrix = std::vector<sync_vector>;
+using sync_vector = pair<vector<string>, multiset<string>>;
+using inner_matrix = vector<sync_vector>;
 
 class syncs_matrix {
   // vector of rows, in which each row has a left-hand side of ordered actions
   // and a right-hand side of a multiset of actions.
-  inner_matrix matrix;
 
   private:
 
@@ -692,9 +695,10 @@ class syncs_matrix {
 
 
   public:
+  inner_matrix matrix;
 
-  std::string pp_action_vector(std::vector<std::string> actions) {
-    std::string s="[";
+  string pp_action_vector(vector<string> actions) {
+    string s="[";
     bool first=true;
     for (const auto& act : actions)
     {
@@ -747,8 +751,8 @@ class syncs_matrix {
     
   }
 
-  std::string formatResult(std::multiset<std::string> multiAction) {
-    std::string serializedMultiAction;
+  string formatResult(multiset<string> multiAction) {
+    string serializedMultiAction;
     
     if (multiAction.empty()) {
       return nullptr;
@@ -768,36 +772,36 @@ class syncs_matrix {
 
   }
 
-  boost::json::value getResult(std::multiset<std::string> multiAction, std::set<std::string>& jani_multiactions_set) {
-    std::string serializedMultiAction = formatResult(multiAction);
+  json::value getResult(multiset<string> multiAction, set<string>& jani_multiactions_set) {
+    string serializedMultiAction = formatResult(multiAction);
     
     if (multiAction.size() > 1) {
       jani_multiactions_set.insert(serializedMultiAction);
     }
 
-    return boost::json::value(serializedMultiAction);
+    return json::value(serializedMultiAction);
   }
 
-  boost::json::array getSynchronisation(std::vector<std::string> actions) {
-    boost::json::array synch;
+  json::array getSynchronisation(vector<string> actions) {
+    json::array synch;
 
     for (const auto& action : actions) {
       if (action == "null") {
-        synch.push_back(boost::json::value(nullptr));
+        synch.push_back(json::value(nullptr));
       } else {
-        synch.push_back(boost::json::value(action));
+        synch.push_back(json::value(action));
       }
     }
 
     return synch;
   }
 
-  boost::json::array toJsonArray(std::set<std::string>& jani_multiactions_set) {
-      boost::json::array jsonArray;
+  json::array toJsonArray(set<string>& jani_multiactions_set) {
+      json::array jsonArray;
 
       for (const auto& row : matrix) {
         jsonArray.push_back(
-          boost::json::object{
+          json::object{
             {"synchronise", getSynchronisation(row.first)},
             {"result", getResult(row.second, jani_multiactions_set)}
           }
@@ -806,12 +810,12 @@ class syncs_matrix {
 
       return jsonArray;
     }
-  syncs_matrix(std::vector<std::string> actions) {
+  syncs_matrix(vector<string> actions) {
     for (const auto& action : actions) {
       matrix.push_back(
-        std::make_pair(
-          std::vector<std::string>{action},
-          std::multiset<std::string>{action}
+        make_pair(
+          vector<string>{action},
+          multiset<string>{action}
         )
       );
     }
@@ -852,15 +856,15 @@ class syncs_matrix {
       for (const auto& thisRow : this->matrix) {
 
         // concatenate left-hand sides
-        std::vector<std::string> newLHS = thisRow.first;
+        vector<string> newLHS = thisRow.first;
         newLHS.insert(newLHS.end(), otherRow.first.begin(), otherRow.first.end());
 
         // add multisets on right-hand sides
-        std::multiset<std::string> newRHS = thisRow.second;
+        multiset<string> newRHS = thisRow.second;
         newRHS.insert(otherRow.second.begin(), otherRow.second.end());
 
         newMatrix.push_back(
-          std::make_pair(
+          make_pair(
             newLHS,
             newRHS
           )
@@ -870,7 +874,7 @@ class syncs_matrix {
     return syncs_matrix(newMatrix);
   }
 
-  syncs_matrix hide(const std::set<std::string>& actionsToHide) {
+  syncs_matrix hide(const set<string>& actionsToHide) {
 
     for(const auto& action : actionsToHide) {
       // delete action from all multiactions possible in order to make them invisible / internal
@@ -882,10 +886,10 @@ class syncs_matrix {
     return *this;
   }
 
-  syncs_matrix rename(const std::map<std::string, std::string>& renamings) {
+  syncs_matrix rename(const map<string, string>& renamings) {
     for(auto& renaming : renamings) {
-      const std::string& from = renaming.first;
-      const std::string& to = renaming.second;
+      const string& from = renaming.first;
+      const string& to = renaming.second;
 
       for (auto& row : matrix) {
         // remove renamed label
@@ -900,7 +904,7 @@ class syncs_matrix {
     return *this;
   }
 
-  syncs_matrix comm(const std::set<std::pair<std::multiset<std::string>, std::string>>& comms) {
+  syncs_matrix comm(const set<pair<multiset<string>, string>>& comms) {
 
     for (auto& row : matrix) {
 
@@ -938,7 +942,7 @@ class syncs_matrix {
 
   // NOTE: allow works on multiactions, block does not,
   // go figure.
-  syncs_matrix allow(const std::set<std::multiset<std::string>>& multiactionsToAllow) {
+  syncs_matrix allow(const set<multiset<string>>& multiactionsToAllow) {
     for (auto row = matrix.begin(); row != matrix.end(); ) {
       if (multiactionsToAllow.contains(row->second)) {
         ++row;
@@ -948,7 +952,7 @@ class syncs_matrix {
     }
     return *this;
   }
-  syncs_matrix block(const std::set<std::string>& actionsToBlock) {
+  syncs_matrix block(const set<string>& actionsToBlock) {
     for (const auto& action : actionsToBlock) {
       // delete every multiaction that contains a blocked action
       for (auto row = matrix.begin(); row != matrix.end();) {
@@ -970,10 +974,10 @@ class jani_translator
   private:
   incomplete_edge_assignments incompleteEdgeAssignments;
   readingActionSet readingActions;
-  std::map<process_identifier, uint> automatonCounters;
+  map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
-  std::set<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
+  set<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
     if (is_process_instance(expr)) {
       return {down_cast<process_instance>(expr)};
     }
@@ -994,11 +998,11 @@ class jani_translator
         return collectPcrlProcessesRec(process::comm(expr).operand()) ;
     }
     else {
-      mCRL2log(mcrl2::log::info) << "Unsupported process expression: " << process::pp(expr) << std::endl;
+      mCRL2log(mcrl2::log::info) << "Unsupported process expression: " << process::pp(expr) << endl;
       throw jani_translation_error("Unsupported process expression encountered during pCRL process collection.");
     }
   }
-  std::set<process_instance> collectPcrlProcesses() {
+  set<process_instance> collectPcrlProcesses() {
     auto initialProcess = spec.init();
 
     return collectPcrlProcessesRec(initialProcess);
@@ -1007,7 +1011,7 @@ class jani_translator
   syncs_matrix buildSyncsMatrixRec(const process_expression& expr) {
     if (is_process_instance(expr)) {
       // base case: single process instance
-      std::vector<std::string> actionsVector;
+      vector<string> actionsVector;
       for (const auto& el : jani_actions) {
         actionsVector.push_back(el.as_object().at("name").as_string().c_str());
       }
@@ -1020,11 +1024,11 @@ class jani_translator
     }
     else if (is_allow(expr)) {
         auto allowedActions = process::allow(expr).allow_set();
-        std::set<std::multiset<std::string>> actionsToAllow;
+        set<multiset<string>> actionsToAllow;
         for (const auto& multiAction : allowedActions) {
-          std::multiset<std::string> multiActionToInsert;
+          multiset<string> multiActionToInsert;
           for (const auto& action : multiAction.names()) {
-            mCRL2log(mcrl2::log::info) << "Allowing action in syncs matrix: " << pp(action) << std::endl;
+            mCRL2log(mcrl2::log::info) << "Allowing action in syncs matrix: " << pp(action) << endl;
             multiActionToInsert.insert(pp(action));
 
           }
@@ -1034,40 +1038,40 @@ class jani_translator
         return subMatrix.allow(actionsToAllow);
     } else if (is_block(expr)) {
       auto blockedActions = process::block(expr).block_set();
-      std::set<std::string> actionsToBlock;
+      set<string> actionsToBlock;
       for (const auto& action : blockedActions) {
-        mCRL2log(mcrl2::log::info) << "Blocking action in syncs matrix: " << pp(action) << std::endl;
+        mCRL2log(mcrl2::log::info) << "Blocking action in syncs matrix: " << pp(action) << endl;
         actionsToBlock.insert(pp(action));
       }
       auto subMatrix = buildSyncsMatrixRec(process::block(expr).operand());
       return subMatrix.block(actionsToBlock);
     } else if (is_hide(expr)) {
       auto hiddenActions = process::hide(expr).hide_set();
-      std::set<std::string> actionsToHide;
+      set<string> actionsToHide;
       for (const auto& action : hiddenActions) {
-        mCRL2log(mcrl2::log::info) << "Hiding action in syncs matrix: " << pp(action) << std::endl;
+        mCRL2log(mcrl2::log::info) << "Hiding action in syncs matrix: " << pp(action) << endl;
         actionsToHide.insert(pp(action));
       }
       auto subMatrix = buildSyncsMatrixRec(process::hide(expr).operand());
       return subMatrix.hide(actionsToHide);
     } else if (is_rename(expr)) {
       auto renamingList = process::rename(expr).rename_set();
-      std::map<std::string, std::string> renamings;
+      map<string, string> renamings;
       for (const auto& renaming : renamingList) {
-        mCRL2log(mcrl2::log::info) << "Renaming action in syncs matrix: " << pp(renaming.source()) << " to " << pp(renaming.target()) << std::endl;
+        mCRL2log(mcrl2::log::info) << "Renaming action in syncs matrix: " << pp(renaming.source()) << " to " << pp(renaming.target()) << endl;
         renamings[pp(renaming.source())] = pp(renaming.target());
       }
       auto subMatrix = buildSyncsMatrixRec(process::rename(expr).operand());
       return subMatrix.rename(renamings);
     } else if (is_comm(expr)) {
       auto commSet = process::comm(expr).comm_set();
-      std::set<std::pair<std::multiset<std::string>, std::string>> actionsToComm;
+      set<pair<multiset<string>, string>> actionsToComm;
       for (const auto& commExp : commSet) {
-        std::multiset<std::string> commLHS;
+        multiset<string> commLHS;
         for (const auto& action : commExp.action_name().names()) {
           commLHS.insert(pp(action));
         }
-        actionsToComm.insert(std::make_pair(commLHS, pp(commExp.name())));
+        actionsToComm.insert(make_pair(commLHS, pp(commExp.name())));
       }
       auto subMatrix = buildSyncsMatrixRec(process::comm(expr).operand());
       return subMatrix.comm(actionsToComm);
@@ -1086,16 +1090,16 @@ class jani_translator
 
 
   // translates prcl process equation to jani automaton
-  boost::json::object translate_process_equation(const process_instance& procInst) {
+  json::object translate_process_equation(const process_instance& procInst) {
 
-    mCRL2log(mcrl2::log::info) << "Translating process equation for: " << process::pp(procInst) << std::endl;
+    mCRL2log(mcrl2::log::info) << "Translating process equation for: " << process::pp(procInst) << endl;
 
-    std::string automatonName;
+    string automatonName;
     if (automatonCounters.find(procInst.identifier()) == automatonCounters.end()) {
       automatonCounters[procInst.identifier()] = 0;
       automatonName = pp(procInst.identifier());
     } else {
-      automatonName = pp(procInst.identifier()) + std::to_string(automatonCounters[procInst.identifier()]);
+      automatonName = pp(procInst.identifier()) + to_string(automatonCounters[procInst.identifier()]);
       automatonCounters[procInst.identifier()]++;
     }
 
@@ -1106,7 +1110,7 @@ class jani_translator
     return automaton;
   }
 
-  boost::json::value initial_value_for_sort(sort_expression sort) {
+  json::value initial_value_for_sort(sort_expression sort) {
     if (data::sort_bool::is_bool(sort))
     {
       return false;
@@ -1144,9 +1148,10 @@ class jani_translator
           auto initial_value = initial_value_for_sort(sort);
 
 
-          jani_variables.push_back(boost::json::object(
+          jani_variables.push_back(json::object(
             {
-              {"name", actionName + "_" + std::to_string(i)},
+              {"name", actionName + "_" + to_string(i)},
+              {"transient", true},
               {"initial-value", initial_value},
               {"type", jani_type}
             }
@@ -1162,7 +1167,7 @@ class jani_translator
     for (const auto& actionLabel : spec.action_labels()) {
 
       jani_actions.push_back(
-        boost::json::object{
+        json::object{
           {"name", pp(actionLabel)}
         }
       );
@@ -1171,13 +1176,13 @@ class jani_translator
 
 
 public:
-  boost::json::object jani_model;
-  boost::json::array jani_actions;
-  std::set<std::string> jani_multiactions_set;
-  boost::json::array jani_variables;
-  boost::json::array jani_automata;
-  boost::json::array jani_edges;
-  boost::json::array jani_system_elements;
+  json::object jani_model;
+  json::array jani_actions;
+  set<string> jani_multiactions_set;
+  json::array jani_variables;
+  json::array jani_automata;
+  json::array jani_edges;
+  json::array jani_system_elements;
 
   process::process_specification spec;
 
@@ -1189,18 +1194,18 @@ public:
 
   
 
-  boost::json::object translate_process_specification()
+  json::object translate_process_specification()
   {
 
-    std::set<process_instance> prclProcesses = collectPcrlProcesses();
+    set<process_instance> prclProcesses = collectPcrlProcesses();
     translateActions();
     auto syncsMatrix = buildSyncsMatrix();
 
     for (const auto& procInst : prclProcesses) {
-      // std::cout << "Found pCRL process: " << process::pp(procInst) << std::endl;
+      // cout << "Found pCRL process: " << process::pp(procInst) << endl;
 
       jani_system_elements.push_back(
-          boost::json::value({{"automaton", pp(procInst.identifier())}})
+          json::value({{"automaton", pp(procInst.identifier())}})
       );
       auto automaton = translate_process_equation(procInst);
       jani_automata.push_back(automaton);
@@ -1217,7 +1222,7 @@ public:
     // assert(jani_multiactions_set.size() == 0);
     // for (auto& multiaction : jani_multiactions_set) {
     //   jani_actions.push_back(
-    //     boost::json::object{
+    //     json::object{
     //       {"name", multiaction}
     //     }
     //   );
@@ -1225,9 +1230,9 @@ public:
 
     addTransientVars();
 
-    addRandomThingToEdges();
+    addMissingAssignments(syncsMatrix);
 
-    return boost::json::object(
+    return json::object(
       {
         {"name", "mCRL2_to_JANI_model"},
         {"type", "pta"},
@@ -1244,12 +1249,78 @@ public:
     );
   }
 
-  void addRandomThingToEdges() {
-    for (auto& incompleteEdge : incompleteEdgeAssignments) {
-      auto edge = *(incompleteEdge.first);
-      edge["lalala"] = "hola";
+  void addMissingAssignments(syncs_matrix syncsMatrix) {
+    // first compute the map writing action -> list of reading actions
+    json::array newJaniAutomata;
+    
+    map<string, set<string>> writeToReads;
+    for (auto& sync : syncsMatrix.matrix) {
 
+      string writingAction;
+      set<string> mappedReadingActions;
+
+      for (auto& actionName : sync.first) {
+        if (readingActions.contains(actionName)) {
+          mappedReadingActions.insert(actionName);
+        } else {
+          writingAction = actionName;
+        }
+      }
+
+      writeToReads[writingAction].insert(mappedReadingActions.begin(), mappedReadingActions.end());
     }
+
+
+    // now add missing assignments on every automaton edge that executes a writing action.
+
+    for (auto& automaton : jani_automata) {
+      auto edgesV = automaton.at_pointer("/edges");
+      assert(edgesV.is_array());
+      auto edges = edgesV.as_array();
+
+      json::array newEdges;
+
+      for (auto& edgeV : edges) {
+        auto edge = edgeV.as_object();
+        string actionName;
+
+        // if edge executes writing action, then add missing assignments
+
+        bool isWritingAction = edge.contains("action") && edge.at("action").is_string() && !readingActions.contains(actionName = edge.at("action").as_string().c_str());
+        bool hasAssignments = edge.contains("assignments") && edge.at("assignments").is_array() && edge.at("assignments").as_array().size() > 0;
+        if (isWritingAction && hasAssignments) {
+          json::object newEdge;
+          json::array newAssignments;
+          newEdge["action"] = actionName;
+          newEdge["location"] = edge["location"];
+          newEdge["destinations"] = edge["destinations"];
+
+          for (uint i = 0; i < edge.at("assignments").as_array().size(); i++) {
+            for (auto& readAction : writeToReads[actionName]) {
+              string postfix = edge.at("assignments").at(i).at("ref").as_string().c_str();
+              string ref = readAction + "_" + postfix; 
+              json::value val = edge.at("assignments").at(i).at("value").as_string().c_str(); 
+
+              newAssignments.push_back(json::object({
+                {"value", val},
+                {"ref", ref}
+              }));
+            }
+
+          }
+
+          newEdge["assignments"] = newAssignments;
+          newEdges.push_back(newEdge);
+          
+        } else {
+          newEdges.push_back(edge);
+        }
+      }
+      automaton.at_pointer("/edges") = newEdges;
+      newJaniAutomata.push_back(automaton);
+    }
+
+    jani_automata = newJaniAutomata;
   }
 
 
@@ -1308,13 +1379,13 @@ public:
     if (input_filename().empty())
     {
       // parse specification from stdin
-      mCRL2log(mcrl2::log::verbose) << "Reading input from stdin..." << std::endl;
-      spec = mcrl2::process::parse_process_specification(std::cin);
+      mCRL2log(mcrl2::log::verbose) << "Reading input from stdin..." << endl;
+      spec = mcrl2::process::parse_process_specification(cin);
     }
     else
     {
-      mCRL2log(mcrl2::log::verbose) << "Reading input from file '" << input_filename() << "'..." << std::endl;
-      std::ifstream instream(input_filename().c_str(), std::ifstream::in | std::ifstream::binary);
+      mCRL2log(mcrl2::log::verbose) << "Reading input from file '" << input_filename() << "'..." << endl;
+      ifstream instream(input_filename().c_str(), ifstream::in | ifstream::binary);
       if (!instream.is_open())
       {
         throw mcrl2::runtime_error("Cannot open input file: " + input_filename() + ".");
@@ -1326,26 +1397,26 @@ public:
     // Report on well-formedness
     if (input_filename().empty())
     {
-      mCRL2log(mcrl2::log::info) << "stdin contains a well-formed mCRL2 specification" << std::endl;
+      mCRL2log(mcrl2::log::info) << "stdin contains a well-formed mCRL2 specification" << endl;
     }
     else
     {
       mCRL2log(mcrl2::log::info) << "the file '" << input_filename() << "' contains a well-formed mCRL2 specification"
-                                 << std::endl;
+                                 << endl;
     }
 
-    mCRL2log(mcrl2::log::info) << mcrl2::process::pp(spec, false) << std::endl;
+    mCRL2log(mcrl2::log::info) << mcrl2::process::pp(spec, false) << endl;
 
     // check that spec is linearisable
     // mcrl2::lps::stochastic_specification linear_spec(mcrl2::lps::linearise(spec, m_linearisation_options));
     jani_translator translator(spec);
 
 
-    // std::cout << "Translating to JANI..." << std::endl;
+    // cout << "Translating to JANI..." << endl;
 
     auto janiModel = translator.translate_process_specification();
 
-    std::cout << janiModel << std::endl;
+    cout << janiModel << endl;
 
     return true;
   }
