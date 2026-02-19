@@ -68,6 +68,29 @@ class jani_translation_error : public mcrl2::runtime_error
   {}
 };
 
+json::value initial_value_for_sort(sort_expression sort) {
+  if (data::sort_bool::is_bool(sort))
+  {
+    return false;
+  }
+  else if (data::sort_int::is_int(sort))
+  {
+    return 0;
+  }
+  else if (data::sort_nat::is_nat(sort))
+  {
+    return 0;
+  }
+  else if (data::sort_pos::is_pos(sort))
+  {
+    return 0;
+  }
+  else
+  {
+    throw jani_translation_error("Jani only supports sorts bool, int, nat and pos. "
+      "It does not support sort " + pp(sort) + ".");
+  }
+}
 
 class scope {
   public:
@@ -123,6 +146,15 @@ json::value convert_sort_expression(const data::sort_expression& sort)
 using incomplete_edge_assignments = vector<pair<json::object*, vector<json::value>>>;
 
 using write_reads_map = map<string, vector<string>>;
+
+// tracks what states are considered initial and/or terminating in the
+// automaton associated to an expression.
+struct automaton {
+  // names 
+  set<string> terminatingStatesNames;
+  string initialStateName;
+};
+
 
 class pcrl_to_automaton_translator{
 private:
@@ -182,6 +214,7 @@ public:
       if (counter == 0 || !isParam) {
         localVariables.push_back(json::object{
           {"name", jani_var},
+          {"initial-value",  initial_value_for_sort(var.sort())},
           {"type", convert_sort_expression(var.sort())}
         });
       }
@@ -224,7 +257,7 @@ public:
     json::object deltaState;
 
     const string DELTA_STATE_NAME = "delta_state";
-    map<process_identifier, json::object> processInstanceStateMap;
+    map<process_identifier, string> processInstanceStateMap;
 
 
   json::object newState() {
@@ -270,39 +303,39 @@ public:
 
   }
 
-  json::object stateForProcessInstance(const process_instance& instance) {
+  // json::object stateForProcessInstance(const process_instance& instance) {
 
 
-    auto identifier = instance.identifier();
+  //   auto identifier = instance.identifier();
 
-    currentProcessName = pp(identifier);
+  //   currentProcessName = pp(identifier);
 
-    // lookup for process expression
-    auto eq = lookup_process_equation(identifier);
+  //   // lookup for process expression
+  //   auto eq = lookup_process_equation(identifier);
 
-    for (auto& param : eq.formal_parameters()) {
-      registerVar(param, pp(instance.identifier()), true);
-    }
+  //   for (auto& param : eq.formal_parameters()) {
+  //     registerVar(param, pp(instance.identifier()), true);
+  //   }
 
-    // check if state already exists
-    if (processInstanceStateMap.find(identifier) != processInstanceStateMap.end()) {
-      return processInstanceStateMap[identifier];
-    } else {
+  //   // check if state already exists
+  //   if (processInstanceStateMap.find(identifier) != processInstanceStateMap.end()) {
+  //     return processInstanceStateMap[identifier];
+  //   } else {
 
-      json::object state{
-        {"name", "state_for_" + pp(instance.identifier())}
-      };
+  //     json::object state{
+  //       {"name", "state_for_" + pp(instance.identifier())}
+  //     };
 
-      processInstanceStateMap[identifier] = state;
+  //     processInstanceStateMap[identifier] = state;
 
-      addStateToAutomaton(state);
+  //     addStateToAutomaton(state);
 
-      auto expression = eq.expression();
+  //     auto expression = eq.expression();
 
-      translateProcessExpression(expression, state["name"].as_string().c_str());
-      return state;
-    }
-  }
+  //     translateProcessExpression(expression, state["name"].as_string().c_str());
+  //     return state;
+  //   }
+  // }
 
   json::object makeEdge(const string& source, const string& target, const string& action, const json::array& assignments = json::array({})) {
     return json::object{
@@ -313,12 +346,24 @@ public:
     };
   }
 
-  json::object makeSilentEdge(const string& source, const string& target, const json::array& assignments = json::array({})) {
-    return json::object{
+  json::object makeSilentEdge(
+    const string& source, const string& target, 
+    const json::array& assignments = json::array({}),
+    const json::object& guardExpression = json::object()
+  ) {
+
+
+    auto edge = json::object{
       {"location", source},
       {"destinations", json::array({json::object({{"location", target}})})},
       {"assignments", assignments}
     };
+
+    if (!guardExpression.empty()) {
+      edge["guard"] = json::object({{"exp", guardExpression}});
+    }
+
+    return edge;
   }
 
   jani_var_name getJaniVarForParam(const string& param, const string& processName) {
@@ -515,18 +560,52 @@ public:
     }
   }
 
-  void translateProcessExpression(const process_expression& expr, string previousStateName) {
+  void eraseStateByName(string removedStateName) {
+    auto states = jani_automaton["locations"].as_array();
+    for (auto it = states.begin();it != states.end(); it++) {
+      // TODO: extract state removal logic
+      auto stateName = it->as_object()["name"].as_string().c_str();
+      if (
+        stateName == removedStateName
+      ) 
+      {
+        states.erase(it);
+      }
+    }
+  }
+
+
+  // replaces `previousTarget` for `newTarget` in every edge where applicable
+  void replaceEdgesTarget(string previousTarget, string newTarget) {
+    auto edges = jani_automaton["edges"].as_array();
+    for (auto it = edges.begin(); it != edges.end(); it++) {
+      auto edge = it->as_object();
+      auto target = edge["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+      if (target == previousTarget) {
+        edge["destinations"].as_array()[0].as_object()["location"] = newTarget;
+      }
+    }
+  }
+
+
+  // TODO: - remove usage of sequentialCompositionStack
+  //       - remove previousStateName and let each call to translateProcessExpression generate all states in the subexpression's automaton
+  //       - rework translateProcessExpression for it to return an automaton so that we can
+  //         somewhat compositionaly carry out the translation
+  //         the sequentialCompositionStack now serves the purpose of a way of anticipating and ultimately avoiding
+  //         the identification of the left-hand side's terminating states with the right-hand side initial state
+  //         if we are to take a more compositional approach then we cannot have any anticipation in that regard.
+  automaton translateProcessExpression(const process_expression& expr) {
 
     if(is_action(expr)) {
 
-      json::object target;
+      json::object initial = newState();
+      json::object target = newState();
 
-      if (sequentialCompositionStack.empty()) {
-        target = newState();
-        addStateToAutomaton(target);
-      } else {
-        target = sequentialCompositionStack.back();
-      }
+      string initialName = initial["name"].as_string().c_str();
+      string targetName = target["name"].as_string().c_str();
+      addStateToAutomaton(target);
+      addStateToAutomaton(initial);
 
       bool actionReads = false;
 
@@ -576,70 +655,121 @@ public:
         }
       }
 
-      addEdgeToAutomaton(makeEdge(previousStateName, target["name"].as_string().c_str(), actionName, assignments));
+      addEdgeToAutomaton(makeEdge(initialName, targetName, actionName, assignments));
 
-    } else if(is_delta(expr)) {
-      // TODO: check if we can avoid adding a tau transition to delta state here
-      ensureDeltaState();
-      addEdgeToAutomaton(
-        makeSilentEdge(
-         previousStateName,
-         DELTA_STATE_NAME
-        )
-      );
+      automaton ret;
+      ret.initialStateName = initialName;
+      ret.terminatingStatesNames.insert(targetName);
+
+      return ret;
+
+    // } else if(is_if_then(expr)) {
+    //   auto if_then = process::if_then(expr);
+    //   auto guard = convert_data_expression(if_then.condition());
+
+    //   auto state = newState();
+
+    //   makeSilentEdge(previousStateName, state["name"].as_string().c_str(), json::array(), guard.as_object());
+
+    //   translateProcessExpression(if_then.then_case(), state["name"].as_string().c_str());
+    // } else if (is_if_then_else(expr)) {
+    //   auto if_then_else = process::if_then_else(expr);
+
+    //   auto guard = convert_data_expression(if_then_else.condition());
+    //   auto notGuard = json::object{
+    //     {"op", reinterpret_cast<const char*>(u8"¬")},
+    //     {"exp", guard}
+    //   };
+    //   auto thenInitialState = newState();
+    //   auto elseInitialState = newState();
+
+    //   makeSilentEdge(previousStateName, thenInitialState["name"].as_string().c_str(), json::array(), guard.as_object());
+    //   makeSilentEdge(previousStateName, elseInitialState["name"].as_string().c_str(), json::array(), notGuard);
+
+    //   translateProcessExpression(if_then_else.then_case(), thenInitialState["name"].as_string().c_str());
+    //   translateProcessExpression(if_then_else.else_case(), elseInitialState["name"].as_string().c_str());
+
+    // } else if(is_delta(expr)) {
+    //   // TODO: check if we can avoid adding a tau transition to delta state here
+    //   ensureDeltaState();
+    //   addEdgeToAutomaton(
+    //     makeSilentEdge(
+    //      previousStateName,
+    //      DELTA_STATE_NAME
+    //     )
+    //   );
     } else if(is_seq(expr)) {
       auto left = process::seq(expr).left();
       auto right = process::seq(expr).right();
 
-      json::object intermediateState = newState();
-      addStateToAutomaton(intermediateState);
-
-      // push intermediate state to stack
-      sequentialCompositionStack.push_back(intermediateState);
-
       // translate left part
-      translateProcessExpression(left, previousStateName);
+      auto rightAutomaton = translateProcessExpression(left);
+      auto leftAutomaton = translateProcessExpression(right);
 
-      // pop intermediate state from stack
-      sequentialCompositionStack.pop_back();
+      // TODO: remove any terminting states from the left part and move 
+      //       its incoming edges into the right's initial state.
 
-      // translate right part
-      translateProcessExpression(right, intermediateState["name"].as_string().c_str());
+      // remove terminating states
+      for (auto& termState : leftAutomaton.terminatingStatesNames) {
+        eraseStateByName(termState);
+        replaceEdgesTarget(termState, rightAutomaton.initialStateName);
+      }
 
-    } else if(is_choice(expr)) {
-      auto left = process::choice(expr).left();
-      auto right = process::choice(expr).right();
+    // } else if(is_choice(expr)) {
+    //   auto left = process::choice(expr).left();
+    //   auto right = process::choice(expr).right();
 
-      // translate left part
-      translateProcessExpression(left, previousStateName);
+    //   // translate left part
+    //   translateProcessExpression(left, previousStateName);
 
-      // translate right part
-      translateProcessExpression(right, previousStateName);
+    //   // translate right part
+    //   translateProcessExpression(right, previousStateName);
     } else if(is_process_instance(expr)) {
 
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
 
-      auto assignments = compute_process_assignments(instance);
+      // auto assignments = compute_process_assignments(instance);
 
       enterScope();
-      json::object targetState = stateForProcessInstance(instance);
 
+      auto identifier = instance.identifier();
 
-      addEdgeToAutomaton(
-        makeSilentEdge(previousStateName, targetState["name"].as_string().c_str(), assignments=assignments)
-      );
-      leaveScope();
-    } else if(is_sum(expr)) {
-      auto summation = down_cast<sum>(expr);
+      currentProcessName = pp(identifier);
 
-      enterScope();
-      for (const auto& var : summation.variables()) {
-        registerVar(var, currentProcessName);
+      // lookup for process expression
+      auto eq = lookup_process_equation(identifier);
+
+      for (auto& param : eq.formal_parameters()) {
+        registerVar(param, pp(instance.identifier()), true);
       }
 
-      translateProcessExpression(summation.operand(), previousStateName);
+      automaton ret;
+
+      // check if state already exists
+      if (processInstanceStateMap.find(identifier) != processInstanceStateMap.end()) {
+
+        ret.initialStateName = processInstanceStateMap[identifier];
+      } else {
+
+        auto expression = eq.expression();
+
+        ret = translateProcessExpression(expression);
+        processInstanceStateMap[identifier] = ret.initialStateName;
+      }
+
       leaveScope();
+      return ret;
+    // } else if(is_sum(expr)) {
+    //   auto summation = down_cast<sum>(expr);
+
+    //   enterScope();
+    //   for (const auto& var : summation.variables()) {
+    //     registerVar(var, currentProcessName);
+    //   }
+
+    //   translateProcessExpression(summation.operand(), previousStateName);
+    //   leaveScope();
     }  else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
@@ -667,12 +797,9 @@ public:
 
     json::object translate(){
 
-      auto initialState = newState();
-      addStateToAutomaton(initialState);
+      automaton automat = translateProcessExpression(initial_process_call);
 
-      jani_automaton["initial-locations"] = json::array({initialState["name"].as_string().c_str()});
-
-      translateProcessExpression(initial_process_call, initialState["name"].as_string().c_str());
+      jani_automaton["initial-locations"] = json::array({automat.initialStateName});
 
       jani_automaton["variables"] = localVariables;
 
@@ -1110,29 +1237,6 @@ class jani_translator
     return automaton;
   }
 
-  json::value initial_value_for_sort(sort_expression sort) {
-    if (data::sort_bool::is_bool(sort))
-    {
-      return false;
-    }
-    else if (data::sort_int::is_int(sort))
-    {
-      return 0;
-    }
-    else if (data::sort_nat::is_nat(sort))
-    {
-      return 0;
-    }
-    else if (data::sort_pos::is_pos(sort))
-    {
-      return 0;
-    }
-    else
-    {
-      throw jani_translation_error("Jani only supports sorts bool, int, nat and pos. "
-        "It does not support sort " + pp(sort) + ".");
-    }
-  }
 
   void addTransientVars() {
     // for now, just add all action labels from the specification
