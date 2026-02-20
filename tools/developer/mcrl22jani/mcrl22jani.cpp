@@ -257,7 +257,7 @@ public:
     json::object deltaState;
 
     const string DELTA_STATE_NAME = "delta_state";
-    map<process_identifier, string> processInstanceStateMap;
+    map<string, string> processInstanceStateMap;
 
 
   json::object newState() {
@@ -561,7 +561,7 @@ public:
   }
 
   void eraseStateByName(string removedStateName) {
-    auto states = jani_automaton["locations"].as_array();
+    auto& states = jani_automaton["locations"].as_array();
     for (auto it = states.begin();it != states.end(); it++) {
       // TODO: extract state removal logic
       auto stateName = it->as_object()["name"].as_string().c_str();
@@ -570,6 +570,7 @@ public:
       ) 
       {
         states.erase(it);
+        break;
       }
     }
   }
@@ -577,9 +578,9 @@ public:
 
   // replaces `previousTarget` for `newTarget` in every edge where applicable
   void replaceEdgesTarget(string previousTarget, string newTarget) {
-    auto edges = jani_automaton["edges"].as_array();
+    auto& edges = jani_automaton["edges"].as_array();
     for (auto it = edges.begin(); it != edges.end(); it++) {
-      auto edge = it->as_object();
+      auto& edge = it->as_object();
       auto target = edge["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
       if (target == previousTarget) {
         edge["destinations"].as_array()[0].as_object()["location"] = newTarget;
@@ -587,14 +588,82 @@ public:
     }
   }
 
+  // unwinds automaton
+  //   - if initial state has no incoming edges, do nothing
+  //   - else, create a new initial state
+  //   - and copy each outgoing edge of the previous initial state 
+  //   - return the new automaton   
+  automaton unwind(automaton autom) {
+    auto& edges = jani_automaton["edges"].as_array();
+    automaton newAutomaton;
+    newAutomaton.terminatingStatesNames = autom.terminatingStatesNames;
+    string initialState = autom.initialStateName;
+    bool hasIncomingEdges = false;
+    for (auto it = edges.begin(); it != edges.end(); it++) {
+      auto& edge = it->as_object();
+      auto target = edge["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+      if (target == initialState) {
+        hasIncomingEdges = true;
+        break;
+      }
+    }
 
-  // TODO: - remove usage of sequentialCompositionStack
-  //       - remove previousStateName and let each call to translateProcessExpression generate all states in the subexpression's automaton
-  //       - rework translateProcessExpression for it to return an automaton so that we can
-  //         somewhat compositionaly carry out the translation
-  //         the sequentialCompositionStack now serves the purpose of a way of anticipating and ultimately avoiding
-  //         the identification of the left-hand side's terminating states with the right-hand side initial state
-  //         if we are to take a more compositional approach then we cannot have any anticipation in that regard.
+    if (hasIncomingEdges) {
+      json::object newInitialState = newState();
+      stateCounter++;
+      addStateToAutomaton(newInitialState);
+
+      vector<json::object> edgesToAdd;
+
+      for (auto it = edges.begin(); it != edges.end(); it++) {
+        auto edge = it->as_object(); // copies edge, we will modify and add it back as a new edge
+        auto target = edge["location"].as_string().c_str();
+        if (target == initialState) {
+          edge["location"] = newInitialState["name"].as_string().c_str();
+          edgesToAdd.push_back(edge);
+        }
+      }
+      for (auto& edge : edgesToAdd) {
+        addEdgeToAutomaton(edge);
+      }
+
+      newAutomaton.initialStateName = newInitialState["name"].as_string().c_str();
+    } else {
+      newAutomaton.initialStateName = initialState;
+    }
+
+    return newAutomaton;
+  }
+
+  automaton identifyInitialStates(automaton autom1, automaton autom2) {
+    // assume that initial states have no outgoing edges
+    // this is because this function is meant to be used after unwinding both automata
+    auto& edges = jani_automaton["edges"].as_array();
+
+    // we'll keep autom1's initial state
+    // and add edges from autom2's
+    // them remove autom2's initial state
+    vector<json::object> edgesToAdd;
+    for (auto it = edges.begin(); it != edges.end(); it++) {
+      auto& edge = it->as_object(); // copies edge, we will modify and add it back as a new edge
+      auto location = edge["location"].as_string().c_str();
+      if (location == autom2.initialStateName) {
+        edge["location"] = autom1.initialStateName;
+      }
+    }
+
+    for (auto& edge : edgesToAdd) {
+      addEdgeToAutomaton(edge);
+    }
+
+    eraseStateByName(autom2.initialStateName);
+
+    autom1.terminatingStatesNames.insert(autom2.terminatingStatesNames.begin(), autom2.terminatingStatesNames.end());
+
+    return autom1;
+  }
+
+
   automaton translateProcessExpression(const process_expression& expr) {
 
     if(is_action(expr)) {
@@ -603,6 +672,13 @@ public:
       json::object target = newState();
 
       string initialName = initial["name"].as_string().c_str();
+
+      // if this is the first state generated for this process, mark it
+      if (processInstanceStateMap.find(currentProcessName) == processInstanceStateMap.end()) {
+
+        processInstanceStateMap[currentProcessName] = initialName;
+      }
+
       string targetName = target["name"].as_string().c_str();
       addStateToAutomaton(target);
       addStateToAutomaton(initial);
@@ -703,8 +779,8 @@ public:
       auto right = process::seq(expr).right();
 
       // translate left part
-      auto rightAutomaton = translateProcessExpression(left);
-      auto leftAutomaton = translateProcessExpression(right);
+      auto leftAutomaton = translateProcessExpression(left);
+      auto rightAutomaton = translateProcessExpression(right);
 
       // TODO: remove any terminting states from the left part and move 
       //       its incoming edges into the right's initial state.
@@ -715,15 +791,24 @@ public:
         replaceEdgesTarget(termState, rightAutomaton.initialStateName);
       }
 
-    // } else if(is_choice(expr)) {
-    //   auto left = process::choice(expr).left();
-    //   auto right = process::choice(expr).right();
+      automaton ret;
+      ret.initialStateName = leftAutomaton.initialStateName;
+      ret.terminatingStatesNames = rightAutomaton.terminatingStatesNames;
+      return ret;
 
-    //   // translate left part
-    //   translateProcessExpression(left, previousStateName);
+    } else if(is_choice(expr)) {
+      auto left = process::choice(expr).left();
+      auto right = process::choice(expr).right();
 
-    //   // translate right part
-    //   translateProcessExpression(right, previousStateName);
+      // translate left part
+      automaton leftAutomaton = translateProcessExpression(left);
+
+      // translate right part
+      automaton rightAutomaton = translateProcessExpression(right);
+
+      // TODO: unwind automata and identify their initial states
+      automaton ret = identifyInitialStates(unwind(leftAutomaton), unwind(rightAutomaton));
+      return ret;
     } else if(is_process_instance(expr)) {
 
       auto instance = down_cast<process_instance>(expr);
@@ -747,29 +832,29 @@ public:
       automaton ret;
 
       // check if state already exists
-      if (processInstanceStateMap.find(identifier) != processInstanceStateMap.end()) {
+      if (processInstanceStateMap.find(currentProcessName) != processInstanceStateMap.end()) {
 
-        ret.initialStateName = processInstanceStateMap[identifier];
+        ret.initialStateName = processInstanceStateMap[currentProcessName];
       } else {
 
         auto expression = eq.expression();
 
         ret = translateProcessExpression(expression);
-        processInstanceStateMap[identifier] = ret.initialStateName;
       }
 
       leaveScope();
       return ret;
-    // } else if(is_sum(expr)) {
-    //   auto summation = down_cast<sum>(expr);
+    } else if(is_sum(expr)) {
+      auto summation = down_cast<sum>(expr);
 
-    //   enterScope();
-    //   for (const auto& var : summation.variables()) {
-    //     registerVar(var, currentProcessName);
-    //   }
+      enterScope();
+      for (const auto& var : summation.variables()) {
+        registerVar(var, currentProcessName);
+      }
 
-    //   translateProcessExpression(summation.operand(), previousStateName);
-    //   leaveScope();
+      automaton ret = translateProcessExpression(summation.operand());
+      leaveScope();
+      return ret;
     }  else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
@@ -862,7 +947,7 @@ class syncs_matrix {
       if (readingActionCount > 0 && writingActionCount != 1) {
         throw jani_translation_error(
           "Synchronization " + pp_action_vector(row.first) + " | " + formatResult(row.second) + " "
-          "is illegal as there are reading actions involved but also more than one writing action."
+          "is illegal as there are reading actions involved but also none, or more than one writing action."
 
         );
       }
@@ -870,8 +955,8 @@ class syncs_matrix {
       if (row.second.size() > 1) {
         throw jani_translation_error(
           "Synchronization " + pp_action_vector(row.first) + " | " + formatResult(row.second) + " "
-          "is illegal, all multiactions should be part of a communication. If this multiactions does not serve any "
-          "function to your model, please disallow it."
+          "is illegal, all multiactions should be part of a communication. If this multiaction does not serve any "
+          "purpose in your model, please disallow it."
         );
       }
     }
