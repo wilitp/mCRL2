@@ -147,12 +147,16 @@ using incomplete_edge_assignments = vector<pair<json::object*, vector<json::valu
 
 using write_reads_map = map<string, vector<string>>;
 
+// assignment to be made on a transition leading to the initial state of a partial_automaton
+using pending_assignment = pair<jani_var_name, vector<json::value>>;
+
 // tracks what states are considered initial and/or terminating in the
 // automaton associated to an expression.
-struct automaton {
+struct partial_automaton {
   // names 
   set<string> terminatingStatesNames;
   string initialStateName;
+  set<pending_assignment> pendingAssignments;
 };
 
 
@@ -408,10 +412,12 @@ public:
   }
 
   json::array compute_process_assignments(const process_instance& instance) {
+
     data_expression_list arguments = instance.actual_parameters();
     auto eq = lookup_process_equation(instance.identifier());
     variable_list parameters = eq.formal_parameters();
 
+    // TODO: if a parameter gets assigned a reading variable, mark the parameter as requiring reading
     // calculate jani names to assign
     vector<jani_var_name> lhss;
     for (auto& param : parameters) {
@@ -593,9 +599,9 @@ public:
   //   - else, create a new initial state
   //   - and copy each outgoing edge of the previous initial state 
   //   - return the new automaton   
-  automaton unwind(automaton autom) {
+  partial_automaton unwind(partial_automaton autom) {
     auto& edges = jani_automaton["edges"].as_array();
-    automaton newAutomaton;
+    partial_automaton newAutomaton;
     newAutomaton.terminatingStatesNames = autom.terminatingStatesNames;
     string initialState = autom.initialStateName;
     bool hasIncomingEdges = false;
@@ -635,7 +641,7 @@ public:
     return newAutomaton;
   }
 
-  automaton identifyInitialStates(automaton autom1, automaton autom2) {
+  partial_automaton identifyInitialStates(partial_automaton autom1, partial_automaton autom2) {
     // assume that initial states have no outgoing edges
     // this is because this function is meant to be used after unwinding both automata
     auto& edges = jani_automaton["edges"].as_array();
@@ -660,7 +666,7 @@ public:
   }
 
 
-  automaton translateProcessExpression(const process_expression& expr) {
+  partial_automaton translateProcessExpression(const process_expression& expr) {
 
     if(is_action(expr)) {
 
@@ -729,7 +735,7 @@ public:
 
       addEdgeToAutomaton(makeEdge(initialName, targetName, actionName, assignments));
 
-      automaton ret;
+      partial_automaton ret;
       ret.initialStateName = initialName;
       ret.terminatingStatesNames.insert(targetName);
 
@@ -778,16 +784,15 @@ public:
       auto leftAutomaton = translateProcessExpression(left);
       auto rightAutomaton = translateProcessExpression(right);
 
-      // TODO: remove any terminting states from the left part and move 
-      //       its incoming edges into the right's initial state.
-
       // remove terminating states
       for (auto& termState : leftAutomaton.terminatingStatesNames) {
         eraseStateByName(termState);
+        // add pending assignments from the right automaton to the modified edges
+        // for non-determinism, this will probably mean to replicate edges
         replaceEdgesTarget(termState, rightAutomaton.initialStateName);
       }
 
-      automaton ret;
+      partial_automaton ret;
       ret.initialStateName = leftAutomaton.initialStateName;
       ret.terminatingStatesNames = rightAutomaton.terminatingStatesNames;
       return ret;
@@ -797,19 +802,24 @@ public:
       auto right = process::choice(expr).right();
 
       // translate left part
-      automaton leftAutomaton = translateProcessExpression(left);
+      partial_automaton leftAutomaton = translateProcessExpression(left);
 
       // translate right part
-      automaton rightAutomaton = translateProcessExpression(right);
+      partial_automaton rightAutomaton = translateProcessExpression(right);
 
-      // TODO: unwind automata and identify their initial states
-      automaton ret = identifyInitialStates(unwind(leftAutomaton), unwind(rightAutomaton));
+      partial_automaton ret = identifyInitialStates(unwind(leftAutomaton), unwind(rightAutomaton));
+
+      // TODO: compute pending assignments
+      //       clashing assignments should be merged into non-deterministic
       return ret;
     } else if(is_process_instance(expr)) {
 
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
 
+      // TODO: compute pending assignments for this instance.
+      //       they should be added to a transition leading 
+      //       to the initial state of the automaton associated to this instance
       // auto assignments = compute_process_assignments(instance);
 
       enterScope();
@@ -825,7 +835,7 @@ public:
         registerVar(param, pp(instance.identifier()), true);
       }
 
-      automaton ret;
+      partial_automaton ret;
 
       // check if state already exists
       if (processInstanceStateMap.find(currentProcessName) != processInstanceStateMap.end()) {
@@ -848,7 +858,7 @@ public:
         registerVar(var, currentProcessName);
       }
 
-      automaton ret = translateProcessExpression(summation.operand());
+      partial_automaton ret = translateProcessExpression(summation.operand());
       leaveScope();
       return ret;
     }  else {
@@ -878,7 +888,11 @@ public:
 
     json::object translate(){
 
-      automaton automat = translateProcessExpression(initial_process_call);
+      // TODO: according to what automat.pendingAssignments is
+      //       set initial values for variables with one value to be assigned
+      //       and replicate the automaton for each variable that has non-deterministic assignments
+
+      partial_automaton automat = translateProcessExpression(initial_process_call);
 
       jani_automaton["initial-locations"] = json::array({automat.initialStateName});
 
