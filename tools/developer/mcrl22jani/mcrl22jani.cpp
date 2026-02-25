@@ -617,7 +617,7 @@ public:
 
       for (auto it = edges.begin(); it != edges.end(); it++) {
         auto edge = it->as_object(); // copies edge, we will modify and add it back as a new edge
-        auto target = edge["location"].as_string().c_str();
+        auto target = edge["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
         if (target == initialState) {
           edge["location"] = newInitialState["name"].as_string().c_str();
           edgesToAdd.push_back(edge);
@@ -641,19 +641,15 @@ public:
     auto& edges = jani_automaton["edges"].as_array();
 
     // we'll keep autom1's initial state
-    // and add edges from autom2's
+    // and move edges from autom2's
     // them remove autom2's initial state
     vector<json::object> edgesToAdd;
     for (auto it = edges.begin(); it != edges.end(); it++) {
-      auto& edge = it->as_object(); // copies edge, we will modify and add it back as a new edge
-      auto location = edge["location"].as_string().c_str();
+      json::value& edge = *it;
+      auto location = edge.at_pointer("/destinations/0/location").as_string().c_str();
       if (location == autom2.initialStateName) {
-        edge["location"] = autom1.initialStateName;
+        edge.at_pointer("/destinations/0/location") = autom1.initialStateName;
       }
-    }
-
-    for (auto& edge : edgesToAdd) {
-      addEdgeToAutomaton(edge);
     }
 
     eraseStateByName(autom2.initialStateName);
@@ -1488,7 +1484,7 @@ public:
             for (auto& readAction : writeToReads[actionName]) {
               string postfix = edge.at("assignments").at(i).at("ref").as_string().c_str();
               string ref = readAction + "_" + postfix; 
-              json::value val = edge.at("assignments").at(i).at("value").as_string().c_str(); 
+              json::value val = edge.at("assignments").at(i).at("value");
 
               newAssignments.push_back(json::object({
                 {"value", val},
