@@ -148,15 +148,16 @@ using incomplete_edge_assignments = vector<pair<json::object*, vector<json::valu
 using write_reads_map = map<string, vector<string>>;
 
 // assignment to be made on a transition leading to the initial state of a partial_automaton
-using pending_assignment = pair<jani_var_name, vector<json::value>>;
+// this is a map and not a list because unguarded recursion is not allowed, so we won't have to worry
+// about multiple assignments to the same variable
+using pending_assignment_list = map<jani_var_name, vector<json::value>>;
 
 // tracks what states are considered initial and/or terminating in the
 // automaton associated to an expression.
 struct partial_automaton {
-  // names 
   set<string> terminatingStatesNames;
   string initialStateName;
-  set<pending_assignment> pendingAssignments;
+  pending_assignment_list pendingAssignments;
 };
 
 
@@ -411,7 +412,7 @@ public:
     return assignments;
   }
 
-  json::array compute_process_assignments(const process_instance& instance) {
+  pending_assignment_list compute_process_assignments(const process_instance& instance) {
 
     data_expression_list arguments = instance.actual_parameters();
     auto eq = lookup_process_equation(instance.identifier());
@@ -433,14 +434,11 @@ public:
     assert(lhss.size() == rhss.size());
 
     // merge them into the assignments array
-    json::array assignments;
+    pending_assignment_list assignments;
 
     for (uint i=0; i < lhss.size(); i++){
-      assignments.push_back(
-        json::object {
-          {"ref", lhss[i]},
-          {"value", rhss[i]}
-        }
+      assignments.insert(
+        {lhss[i], vector<json::value>({rhss[i]})}
       );
     }
 
@@ -642,8 +640,13 @@ public:
   }
 
   partial_automaton identifyInitialStates(partial_automaton autom1, partial_automaton autom2) {
+    // TODO: update the process instance - state map so it doesn't point to a removed state.
+
     // assume that initial states have no outgoing edges
     // this is because this function is meant to be used after unwinding both automata
+    if (autom1.initialStateName == autom2.initialStateName) {
+      return autom1;
+    }
     auto& edges = jani_automaton["edges"].as_array();
 
     // we'll keep autom1's initial state
@@ -674,12 +677,6 @@ public:
       json::object target = newState();
 
       string initialName = initial["name"].as_string().c_str();
-
-      // if this is the first state generated for this process, mark it
-      if (processInstanceStateMap.find(currentProcessName) == processInstanceStateMap.end()) {
-
-        processInstanceStateMap[currentProcessName] = initialName;
-      }
 
       string targetName = target["name"].as_string().c_str();
       addStateToAutomaton(target);
@@ -807,20 +804,29 @@ public:
       // translate right part
       partial_automaton rightAutomaton = translateProcessExpression(right);
 
-      partial_automaton ret = identifyInitialStates(unwind(leftAutomaton), unwind(rightAutomaton));
+      partial_automaton ret;
 
-      // TODO: compute pending assignments
-      //       clashing assignments should be merged into non-deterministic
+      // if automata are the same, there's no need to unwind
+      // UNLESS they have clashing pending assignments
+      // in that case we need to unwind before applying our expression rewrite
+      if (leftAutomaton.initialStateName != rightAutomaton.initialStateName) {
+        ret = identifyInitialStates(unwind(leftAutomaton), unwind(rightAutomaton));
+      } else {
+        ret = leftAutomaton;
+        // TODO: compute pending assignments
+      }
+
       return ret;
     } else if(is_process_instance(expr)) {
+
 
       auto instance = down_cast<process_instance>(expr);
       // create edge to state for process instance
 
-      // TODO: compute pending assignments for this instance.
-      //       they should be added to a transition leading 
-      //       to the initial state of the automaton associated to this instance
-      // auto assignments = compute_process_assignments(instance);
+      // TODO: - compute pending assignments for this instance.
+      //       - merge assignments into the assignments for the process body
+
+      auto assignments = compute_process_assignments(instance);
 
       enterScope();
 
@@ -835,21 +841,44 @@ public:
         registerVar(param, pp(instance.identifier()), true);
       }
 
+      // create placeholder state to catch recursive calls
+      json::object placeholderState;
+
+      partial_automaton bodyAutomaton;
       partial_automaton ret;
 
-      // check if state already exists
+      // if placeholder state already exists, 
+      // then only return an automaton with the placeholder as initial state and the assignments for this call
       if (processInstanceStateMap.find(currentProcessName) != processInstanceStateMap.end()) {
 
         ret.initialStateName = processInstanceStateMap[currentProcessName];
+        ret.pendingAssignments = assignments;
+        return ret;
       } else {
+
+        // else, translate the body
+
+        placeholderState = newState();
+        processInstanceStateMap[currentProcessName] = placeholderState["name"].as_string().c_str();
 
         auto expression = eq.expression();
 
-        ret = translateProcessExpression(expression);
+        bodyAutomaton = translateProcessExpression(expression);
+
+        leaveScope();
+
+        partial_automaton placeholderAutomaton;
+        placeholderAutomaton.initialStateName = placeholderState["name"].as_string().c_str();
+
+        // after process body is translated, identify it's initial state with the placeholder
+        auto ret = identifyInitialStates(bodyAutomaton, placeholderAutomaton);
+
+        // TODO: merge the assignments in this call with the pending assignments from the body
+
+        return ret;
       }
 
-      leaveScope();
-      return ret;
+
     } else if(is_sum(expr)) {
       auto summation = down_cast<sum>(expr);
 
