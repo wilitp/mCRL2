@@ -831,7 +831,56 @@ public:
     }
 
     void removeUnreachableLocationsAndEdges(string initialLocation) {
-      // TODO
+      set<string> reachableLocations;
+      
+      // perform a DFS from the initial location to find all reachable locations
+      vector<string> stack = {initialLocation};
+      while (!stack.empty()) {
+        string location = stack.back();
+        stack.pop_back();
+        if (!reachableLocations.contains(location)) {
+          reachableLocations.insert(location);
+          for (auto& edge : jani_automaton["edges"].as_array()) {
+            auto& edgeObj = edge.as_object();
+            auto source = edgeObj["location"].as_string().c_str();
+            if (source == location) {
+              auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+              stack.push_back(target);
+            }
+          }
+        }
+      }
+
+      // remove locations that are not reachable
+      // iterators are invalidated when we erase, so we first collect the locations to remove and then remove them in a second loop
+      auto& locations = jani_automaton["locations"].as_array();
+      set<string> locationsToRemove;
+      for (auto it = locations.begin(); it != locations.end(); it++) {
+        auto& locationObj = it->as_object();
+        auto locationName = locationObj["name"].as_string().c_str();
+        if (!reachableLocations.contains(locationName)) {
+          locationsToRemove.insert(locationName);
+        }
+      }
+      for (const auto& locationName : locationsToRemove) {
+        eraseStateByName(locationName);
+      }
+
+      // remove edges that have an unreachable source or target
+      auto& edges = jani_automaton["edges"].as_array();
+      vector<json::value> edgesToRemove;
+      for (auto it = edges.begin(); it != edges.end(); ) {
+        auto& edgeObj = it->as_object();
+        auto source = edgeObj["location"].as_string().c_str();
+        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+        if (!reachableLocations.contains(source) || !reachableLocations.contains(target)) {
+          edges.erase(it);
+          edges = jani_automaton["edges"].as_array();
+          it = edges.begin(); // refresh iterator as erasing invalidates it
+          continue;
+        }
+        it++;
+      }
     }
 
     json::object translate(){
