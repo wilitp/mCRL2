@@ -261,12 +261,15 @@ public:
     uint stateCounter = 0;
     json::object deltaState;
 
-    const string DELTA_STATE_NAME = "delta_state";
+    const string DELTA_LOCATION_NAME = "delta_state";
+    const string TERMINATION_LOCATION_NAME = "termination";
     map<string, string> processInstanceStateMap;
+    map<string, string> stateProcessInstanceMap;
 
 
   json::object newState() {
-     json::object state{
+    // TODO: add the state here and just return the name
+    json::object state{
       {"name", "state_" + to_string(stateCounter)}
     };
 
@@ -279,7 +282,7 @@ public:
   void ensureDeltaState() {
     if (deltaState.empty()) {
       deltaState = json::object{
-        {"name", DELTA_STATE_NAME}
+        {"name", DELTA_LOCATION_NAME}
       };
       addStateToAutomaton(deltaState);
     }
@@ -308,39 +311,6 @@ public:
 
   }
 
-  // json::object stateForProcessInstance(const process_instance& instance) {
-
-
-  //   auto identifier = instance.identifier();
-
-  //   currentProcessName = pp(identifier);
-
-  //   // lookup for process expression
-  //   auto eq = lookup_process_equation(identifier);
-
-  //   for (auto& param : eq.formal_parameters()) {
-  //     registerVar(param, pp(instance.identifier()), true);
-  //   }
-
-  //   // check if state already exists
-  //   if (processInstanceStateMap.find(identifier) != processInstanceStateMap.end()) {
-  //     return processInstanceStateMap[identifier];
-  //   } else {
-
-  //     json::object state{
-  //       {"name", "state_for_" + pp(instance.identifier())}
-  //     };
-
-  //     processInstanceStateMap[identifier] = state;
-
-  //     addStateToAutomaton(state);
-
-  //     auto expression = eq.expression();
-
-  //     translateProcessExpression(expression, state["name"].as_string().c_str());
-  //     return state;
-  //   }
-  // }
 
   json::object makeEdge(const string& source, const string& target, const string& action, const json::array& assignments = json::array({})) {
     return json::object{
@@ -640,7 +610,6 @@ public:
   }
 
   partial_automaton identifyInitialStates(partial_automaton autom1, partial_automaton autom2) {
-    // TODO: update the process instance - state map so it doesn't point to a removed state.
 
     // assume that initial states have no outgoing edges
     // this is because this function is meant to be used after unwinding both automata
@@ -661,6 +630,12 @@ public:
       }
     }
 
+    // for (auto& pair : processInstanceStateMap) {
+    //   if (pair.second == autom2.initialStateName) {
+    //     pair.second = autom1.initialStateName;
+    //   }
+    // }
+
     eraseStateByName(autom2.initialStateName);
 
     autom1.terminatingStatesNames.insert(autom2.terminatingStatesNames.begin(), autom2.terminatingStatesNames.end());
@@ -668,228 +643,168 @@ public:
     return autom1;
   }
 
+  void ensureTermLocation() {
+    // TODO: just save `found` in the class as `termLocationCreated`
+    //       and skip the search
+    bool found = false;
+    for (auto& location : jani_automaton["locations"].as_array()) {
+      if (location.as_object()["name"].as_string().c_str() == TERMINATION_LOCATION_NAME) {
+        found = true;
+      }
+    }
 
-  partial_automaton translateProcessExpression(const process_expression& expr) {
+    if (!found) {
+      json::object terminationLocation{
+        {"name", TERMINATION_LOCATION_NAME}
+      };
+
+      addStateToAutomaton(terminationLocation);
+    }
+  }
+
+  pair<string, bool> ensureLocationForExpression(process_expression expr) {
+    // user code must have followed the equations and call this function
+    // only if it found the actual behavior
+    assert(!is_process_instance(expr));
+
+    if (subProcessStateMap.count(expr) == 0) {
+      auto loc = newState();
+      string name = loc["name"].as_string().c_str();
+      addStateToAutomaton(loc);
+      subProcessStateMap.insert({expr, name});
+      locationSubProcessMap.insert({name, expr});
+      return make_pair(name, true);
+    } else {
+      return make_pair(subProcessStateMap.at(expr), false);
+    }
+  }
+
+  // these keep track of the location associated to a subprocess expression and vice-versa
+  map<process_expression, string>subProcessStateMap;
+  map<string, process_expression> locationSubProcessMap;
+
+
+  void translateProcessExpression(const process_expression& expr) {
 
     if(is_action(expr)) {
 
-      json::object initial = newState();
-      json::object target = newState();
-
-      string initialName = initial["name"].as_string().c_str();
-
-      string targetName = target["name"].as_string().c_str();
-      addStateToAutomaton(target);
-      addStateToAutomaton(initial);
-
-      bool actionReads = false;
+      // Ensure a location exists for this action
+      auto [locationName, created] = ensureLocationForExpression(expr);
+      if (!created) {
+        return;
+      }
 
       auto act = down_cast<action>(expr);
-      string actionName = pp(down_cast<action>(expr).label());
-      vector<jani_var_name> varsToUnmark;
-      for (const auto& arg : act.arguments()) {
-        for (const auto& var : data::find_free_variables(arg)) {
-          auto varName = static_cast<string>(var.name());
-          auto janiVar = getVariable(varName);
-          if (requiresReading(janiVar)) {
-            actionReads = true; 
-            varsToUnmark.push_back(janiVar);
-            readingActions.insert(actionName);
+      string actionName = pp(act.label());
+
+      // Ensure terminating location is in the graph
+      ensureTermLocation();
+
+
+      // Ensure there's a transition from this location to the terminating location
+      if (created) {
+        auto edge = makeEdge(locationName, TERMINATION_LOCATION_NAME, actionName);
+        addEdgeToAutomaton(edge);
+      }
+
+    }  else if(is_seq(expr)) {
+
+      auto sequence = down_cast<seq>(expr);
+
+      auto [locationName, created] = ensureLocationForExpression(expr); 
+
+      if (!created) {
+        return;
+      }
+
+      auto p = sequence.left(); 
+      auto q = sequence.right(); 
+      translateProcessExpression(p);
+      translateProcessExpression(q);
+
+
+      // for every outgoing transition from the left part:
+      //   if it's to the terminating location, copy it but aiming from this location to the right part's location
+      //   if it's not, then copy it but aiming from this location to a new expression's we'll have to recurse on first on.
+      //   - this expression is `[the expression correponding to the aimed location] . [right part]`
+
+      for (auto& edge : jani_automaton["edges"].as_array()) {
+        auto& edgeObj = edge.as_object();
+        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+        auto source = edgeObj["location"].as_string().c_str();
+        if (source == subProcessStateMap.at(p)) {
+          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
+          newEdge["location"] = locationName;
+          if (edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str() == TERMINATION_LOCATION_NAME) {
+            newEdge["destinations"].as_array()[0].as_object()["location"] = subProcessStateMap.at(q);
+            addEdgeToAutomaton(newEdge);
+          } else {
+            auto newExpr = seq(locationSubProcessMap.at(target), q);
+            translateProcessExpression(newExpr);
+
+            newEdge["destinations"].as_array()[0].as_object()["location"] = subProcessStateMap.at(newExpr);
+            addEdgeToAutomaton(newEdge);
           }
         }
       }
-
+    } else if(is_choice(expr)) {
       // TODO:
-      // - compute assignments related to READING if applicable
-      json::array assignments({});
-      if (actionReads) {
-        assignments = compute_read_assignments(act);
+      // - Ensure a location exists for this choice
+      // - For each outgoing transition of the left side, copy it but going out of this location
+      // - For each outgoing transition of the right side, copy it but going out of this location
+      // - EVEN IF THEY ARE THE SAME EXPRESSION
+
+      auto [locationName, created] = ensureLocationForExpression(expr);
+      if (!created) {
+        return;
       }
+      auto choiceExpr = down_cast<choice>(expr);
+      auto p = choiceExpr.left();
+      auto q = choiceExpr.right();
+      translateProcessExpression(p);
+      translateProcessExpression(q);
 
-
-      for (auto& janiVar : varsToUnmark) {
-        unmarkForReading(janiVar);
-      }
-
-      // TODO:
-      // - somehow compute assignments related to writing, probably need to compute the syncs before translating automata
-
-      if (!actionReads) {
-        // this is a writing action, so track its assignments
-        // so as to assign to transient variables later
-
-        uint i = 0;
-        for (auto& arg : act.arguments()) {
-          assignments.push_back(
-            json::object({
-              {"ref", to_string(i)},
-              {"value", convert_data_expression(arg)}
-            })
-          );
-          i++;
+      for (auto& edge : jani_automaton["edges"].as_array()) {
+        auto& edgeObj = edge.as_object();
+        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+        auto source = edgeObj["location"].as_string().c_str();
+        if (source == subProcessStateMap.at(p) || source == subProcessStateMap.at(q)) {
+          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
+          newEdge["location"] = locationName;
+          addEdgeToAutomaton(newEdge);
         }
       }
-
-      addEdgeToAutomaton(makeEdge(initialName, targetName, actionName, assignments));
-
-      partial_automaton ret;
-      ret.initialStateName = initialName;
-      ret.terminatingStatesNames.insert(targetName);
-
-      return ret;
-
-    // } else if(is_if_then(expr)) {
-    //   auto if_then = process::if_then(expr);
-    //   auto guard = convert_data_expression(if_then.condition());
-
-    //   auto state = newState();
-
-    //   makeSilentEdge(previousStateName, state["name"].as_string().c_str(), json::array(), guard.as_object());
-
-    //   translateProcessExpression(if_then.then_case(), state["name"].as_string().c_str());
-    // } else if (is_if_then_else(expr)) {
-    //   auto if_then_else = process::if_then_else(expr);
-
-    //   auto guard = convert_data_expression(if_then_else.condition());
-    //   auto notGuard = json::object{
-    //     {"op", reinterpret_cast<const char*>(u8"¬")},
-    //     {"exp", guard}
-    //   };
-    //   auto thenInitialState = newState();
-    //   auto elseInitialState = newState();
-
-    //   makeSilentEdge(previousStateName, thenInitialState["name"].as_string().c_str(), json::array(), guard.as_object());
-    //   makeSilentEdge(previousStateName, elseInitialState["name"].as_string().c_str(), json::array(), notGuard);
-
-    //   translateProcessExpression(if_then_else.then_case(), thenInitialState["name"].as_string().c_str());
-    //   translateProcessExpression(if_then_else.else_case(), elseInitialState["name"].as_string().c_str());
-
-    // } else if(is_delta(expr)) {
-    //   // TODO: check if we can avoid adding a tau transition to delta state here
-    //   ensureDeltaState();
-    //   addEdgeToAutomaton(
-    //     makeSilentEdge(
-    //      previousStateName,
-    //      DELTA_STATE_NAME
-    //     )
-    //   );
-    } else if(is_seq(expr)) {
-      auto left = process::seq(expr).left();
-      auto right = process::seq(expr).right();
-
-      // translate left part
-      auto leftAutomaton = translateProcessExpression(left);
-      auto rightAutomaton = translateProcessExpression(right);
-
-      // remove terminating states
-      for (auto& termState : leftAutomaton.terminatingStatesNames) {
-        eraseStateByName(termState);
-        // add pending assignments from the right automaton to the modified edges
-        // for non-determinism, this will probably mean to replicate edges
-        replaceEdgesTarget(termState, rightAutomaton.initialStateName);
-      }
-
-      partial_automaton ret;
-      ret.initialStateName = leftAutomaton.initialStateName;
-      ret.terminatingStatesNames = rightAutomaton.terminatingStatesNames;
-      return ret;
-
-    } else if(is_choice(expr)) {
-      auto left = process::choice(expr).left();
-      auto right = process::choice(expr).right();
-
-      // translate left part
-      partial_automaton leftAutomaton = translateProcessExpression(left);
-
-      // translate right part
-      partial_automaton rightAutomaton = translateProcessExpression(right);
-
-      partial_automaton ret;
-
-      // if automata are the same, there's no need to unwind
-      // UNLESS they have clashing pending assignments
-      // in that case we need to unwind before applying our expression rewrite
-      if (leftAutomaton.initialStateName != rightAutomaton.initialStateName) {
-        ret = identifyInitialStates(unwind(leftAutomaton), unwind(rightAutomaton));
-      } else {
-        ret = leftAutomaton;
-        // TODO: compute pending assignments
-      }
-
-      return ret;
     } else if(is_process_instance(expr)) {
-
+      // TODO:
+      // - Follow the equations until the first non-indirect expression
+      // - Recurse on that expression
 
       auto instance = down_cast<process_instance>(expr);
-      // create edge to state for process instance
 
-      // TODO: - compute pending assignments for this instance.
-      //       - merge assignments into the assignments for the process body
+      auto eq = lookup_process_equation(instance.identifier());
+      auto processExpr = eq.expression();
 
-      auto assignments = compute_process_assignments(instance);
+      vector<process_expression> aliasedProcesses;
+      aliasedProcesses.push_back(expr);
 
-      enterScope();
-
-      auto identifier = instance.identifier();
-
-      currentProcessName = pp(identifier);
-
-      // lookup for process expression
-      auto eq = lookup_process_equation(identifier);
-
-      for (auto& param : eq.formal_parameters()) {
-        registerVar(param, pp(instance.identifier()), true);
+      while (is_process_instance(processExpr)) {
+        aliasedProcesses.push_back(processExpr);
+        auto instance = down_cast<process_instance>(processExpr);
+        auto eq = lookup_process_equation(instance.identifier());
+        processExpr = eq.expression();
       }
 
-      // create placeholder state to catch recursive calls
-      json::object placeholderState;
+      translateProcessExpression(processExpr);
 
-      partial_automaton bodyAutomaton;
-      partial_automaton ret;
-
-      // if placeholder state already exists, 
-      // then only return an automaton with the placeholder as initial state and the assignments for this call
-      if (processInstanceStateMap.find(currentProcessName) != processInstanceStateMap.end()) {
-
-        ret.initialStateName = processInstanceStateMap[currentProcessName];
-        ret.pendingAssignments = assignments;
-        return ret;
-      } else {
-
-        // else, translate the body
-
-        placeholderState = newState();
-        processInstanceStateMap[currentProcessName] = placeholderState["name"].as_string().c_str();
-
-        auto expression = eq.expression();
-
-        bodyAutomaton = translateProcessExpression(expression);
-
-        leaveScope();
-
-        partial_automaton placeholderAutomaton;
-        placeholderAutomaton.initialStateName = placeholderState["name"].as_string().c_str();
-
-        // after process body is translated, identify it's initial state with the placeholder
-        auto ret = identifyInitialStates(bodyAutomaton, placeholderAutomaton);
-
-        // TODO: merge the assignments in this call with the pending assignments from the body
-
-        return ret;
+      for (auto& proc : aliasedProcesses) {
+        subProcessStateMap.insert({proc, subProcessStateMap.at(processExpr)});
       }
-
-
+      
     } else if(is_sum(expr)) {
-      auto summation = down_cast<sum>(expr);
-
-      enterScope();
-      for (const auto& var : summation.variables()) {
-        registerVar(var, currentProcessName);
-      }
-
-      partial_automaton ret = translateProcessExpression(summation.operand());
-      leaveScope();
-      return ret;
+      // TODO
+    
+    } else if(is_if_then(expr)) {
+      // TODO
     }  else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
@@ -915,17 +830,22 @@ public:
       return readingActions;
     }
 
+    void removeUnreachableLocationsAndEdges(string initialLocation) {
+      // TODO
+    }
+
     json::object translate(){
 
-      // TODO: according to what automat.pendingAssignments is
-      //       set initial values for variables with one value to be assigned
-      //       and replicate the automaton for each variable that has non-deterministic assignments
+      translateProcessExpression(initial_process_call);
 
-      partial_automaton automat = translateProcessExpression(initial_process_call);
+      auto initialLocation = subProcessStateMap.at(initial_process_call);
 
-      jani_automaton["initial-locations"] = json::array({automat.initialStateName});
+      jani_automaton["initial-locations"] = json::array({initialLocation});
 
       jani_automaton["variables"] = localVariables;
+
+      // TODO: remove unreachable locations and edges.
+      removeUnreachableLocationsAndEdges(initialLocation);
 
       return jani_automaton;
     };
