@@ -748,12 +748,8 @@ public:
         }
       }
     } else if(is_choice(expr)) {
-      // TODO:
-      // - Ensure a location exists for this choice
-      // - For each outgoing transition of the left side, copy it but going out of this location
-      // - For each outgoing transition of the right side, copy it but going out of this location
-      // - EVEN IF THEY ARE THE SAME EXPRESSION
 
+      // - Ensure a location exists for this choice
       auto [locationName, created] = ensureLocationForExpression(expr);
       if (!created) {
         return;
@@ -764,21 +760,31 @@ public:
       translateProcessExpression(p);
       translateProcessExpression(q);
 
+      // - For each outgoing transition of the left side, copy it but going out of this location
       for (auto& edge : jani_automaton["edges"].as_array()) {
         auto& edgeObj = edge.as_object();
         auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
         auto source = edgeObj["location"].as_string().c_str();
-        if (source == subProcessStateMap.at(p) || source == subProcessStateMap.at(q)) {
+
+        if (source == subProcessStateMap.at(p)) {
+          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
+          newEdge["location"] = locationName;
+          addEdgeToAutomaton(newEdge);
+        }
+
+
+        if (source == subProcessStateMap.at(q)) {
           json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
           newEdge["location"] = locationName;
           addEdgeToAutomaton(newEdge);
         }
       }
-    } else if(is_process_instance(expr)) {
-      // TODO:
-      // - Follow the equations until the first non-indirect expression
-      // - Recurse on that expression
 
+    } else if(is_process_instance(expr)) {
+
+      // TODO: 
+      //   - register variables in symbol table
+      //   - compute assignments for the chain of process intantiation
       auto instance = down_cast<process_instance>(expr);
 
       auto eq = lookup_process_equation(instance.identifier());
