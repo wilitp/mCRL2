@@ -316,8 +316,7 @@ public:
     return json::object{
       {"action", action},
       {"location", source},
-      {"destinations", json::array({json::object({{"location", target}})})},
-      {"assignments", assignments}
+      {"destinations", json::array({json::object({{"location", target}, {"assigments", assignments}})})},
     };
   }
 
@@ -330,8 +329,7 @@ public:
 
     auto edge = json::object{
       {"location", source},
-      {"destinations", json::array({json::object({{"location", target}})})},
-      {"assignments", assignments}
+      {"destinations", json::array({json::object({{"location", target}, {"assigments", assignments}})})},
     };
 
     if (!guardExpression.empty()) {
@@ -662,10 +660,16 @@ public:
     }
   }
 
-  pair<string, bool> ensureLocationForExpression(process_expression expr) {
+  // these keep track of the location associated to a subprocess expression and vice-versa
+  using symbolic_process_expression = pair<process_expression, map<mcrl2_var_name, jani_var_name>>;
+  map<symbolic_process_expression, string>subProcessStateMap;
+  map<string, symbolic_process_expression> locationSubProcessMap;
+
+
+  pair<string, bool> ensureLocationForExpression(symbolic_process_expression expr) {
     // user code must have followed the equations and call this function
     // only if it found the actual behavior
-    assert(!is_process_instance(expr));
+    assert(!is_process_instance(expr.first));
 
     if (subProcessStateMap.count(expr) == 0) {
       auto loc = newState();
@@ -679,19 +683,30 @@ public:
     }
   }
 
-  // these keep track of the location associated to a subprocess expression and vice-versa
-  map<process_expression, string>subProcessStateMap;
-  map<string, process_expression> locationSubProcessMap;
 
+  string translateProcessExpression(const process_expression& expr) {
 
-  void translateProcessExpression(const process_expression& expr) {
+    auto fv = process::find_free_variables(expr);
+
+    map<mcrl2_var_name, jani_var_name> varMap;
+
+    for (const auto& var : fv) {
+      varMap[var.name()] = getVariable(pp(var.name()));
+    }
+
+    symbolic_process_expression symExpr{expr, varMap};
+
+    for (const auto& var : fv) {
+      getVariable(pp(var.name()));
+    }
+
 
     if(is_action(expr)) {
 
       // Ensure a location exists for this action
-      auto [locationName, created] = ensureLocationForExpression(expr);
+      auto [locationName, created] = ensureLocationForExpression(symExpr);
       if (!created) {
-        return;
+        return locationName;
       }
 
       auto act = down_cast<action>(expr);
@@ -707,20 +722,22 @@ public:
         addEdgeToAutomaton(edge);
       }
 
+      return locationName;
+
     }  else if(is_seq(expr)) {
 
       auto sequence = down_cast<seq>(expr);
 
-      auto [locationName, created] = ensureLocationForExpression(expr); 
+      auto [locationName, created] = ensureLocationForExpression(symExpr); 
 
       if (!created) {
-        return;
+        return locationName;
       }
 
       auto p = sequence.left(); 
       auto q = sequence.right(); 
-      translateProcessExpression(p);
-      translateProcessExpression(q);
+      auto leftLocation = translateProcessExpression(p);
+      auto rightLocation = translateProcessExpression(q);
 
 
       // for every outgoing transition from the left part:
@@ -732,33 +749,35 @@ public:
         auto& edgeObj = edge.as_object();
         auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
         auto source = edgeObj["location"].as_string().c_str();
-        if (source == subProcessStateMap.at(p)) {
+        if (source == leftLocation) {
           json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
           newEdge["location"] = locationName;
           if (edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str() == TERMINATION_LOCATION_NAME) {
-            newEdge["destinations"].as_array()[0].as_object()["location"] = subProcessStateMap.at(q);
+            newEdge["destinations"].as_array()[0].as_object()["location"] = rightLocation;
             addEdgeToAutomaton(newEdge);
           } else {
-            auto newExpr = seq(locationSubProcessMap.at(target), q);
-            translateProcessExpression(newExpr);
+            auto newExpr = seq(locationSubProcessMap.at(target).first, q);
+            auto newLocation = translateProcessExpression(newExpr);
 
-            newEdge["destinations"].as_array()[0].as_object()["location"] = subProcessStateMap.at(newExpr);
+            newEdge["destinations"].as_array()[0].as_object()["location"] = newLocation;
             addEdgeToAutomaton(newEdge);
           }
         }
       }
+
+      return locationName;
     } else if(is_choice(expr)) {
 
       // - Ensure a location exists for this choice
-      auto [locationName, created] = ensureLocationForExpression(expr);
+      auto [locationName, created] = ensureLocationForExpression(symExpr);
       if (!created) {
-        return;
+        return locationName;
       }
       auto choiceExpr = down_cast<choice>(expr);
       auto p = choiceExpr.left();
       auto q = choiceExpr.right();
-      translateProcessExpression(p);
-      translateProcessExpression(q);
+      auto leftLocation = translateProcessExpression(p);
+      auto rightLocation = translateProcessExpression(q);
 
       // - For each outgoing transition of the left side, copy it but going out of this location
       for (auto& edge : jani_automaton["edges"].as_array()) {
@@ -766,45 +785,41 @@ public:
         auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
         auto source = edgeObj["location"].as_string().c_str();
 
-        if (source == subProcessStateMap.at(p)) {
+        if (source == leftLocation) {
           json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
           newEdge["location"] = locationName;
           addEdgeToAutomaton(newEdge);
         }
 
 
-        if (source == subProcessStateMap.at(q)) {
+        if (source == rightLocation) {
           json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
           newEdge["location"] = locationName;
           addEdgeToAutomaton(newEdge);
         }
       }
 
+      return locationName;
     } else if(is_process_instance(expr)) {
 
-      // TODO: 
-      //   - register variables in symbol table
-      //   - compute assignments for the chain of process intantiation
       auto instance = down_cast<process_instance>(expr);
 
       auto eq = lookup_process_equation(instance.identifier());
       auto processExpr = eq.expression();
 
-      vector<process_expression> aliasedProcesses;
-      aliasedProcesses.push_back(expr);
-
-      while (is_process_instance(processExpr)) {
-        aliasedProcesses.push_back(processExpr);
-        auto instance = down_cast<process_instance>(processExpr);
-        auto eq = lookup_process_equation(instance.identifier());
-        processExpr = eq.expression();
+      // register variables in symbol table
+      enterProcessScope();
+      variable_list params = eq.formal_parameters();
+      for (auto& param : params) {
+        registerVar(param, pp(eq.identifier()), true);
       }
 
-      translateProcessExpression(processExpr);
+      auto innerProcessLocation = translateProcessExpression(processExpr);
 
-      for (auto& proc : aliasedProcesses) {
-        subProcessStateMap.insert({proc, subProcessStateMap.at(processExpr)});
-      }
+      subProcessStateMap.insert({symExpr, innerProcessLocation});
+      leaveScope();
+
+      return innerProcessLocation;
       
     } else if(is_sum(expr)) {
       // TODO
@@ -891,9 +906,7 @@ public:
 
     json::object translate(){
 
-      translateProcessExpression(initial_process_call);
-
-      auto initialLocation = subProcessStateMap.at(initial_process_call);
+      auto initialLocation = translateProcessExpression(initial_process_call);
 
       jani_automaton["initial-locations"] = json::array({initialLocation});
 
