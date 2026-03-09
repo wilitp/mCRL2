@@ -674,7 +674,6 @@ public:
   pair<string, bool> ensureLocationForExpression(symbolic_process_expression expr) {
     // user code must have followed the equations and call this function
     // only if it found the actual behavior
-    assert(!is_process_instance(expr.first));
 
     if (subProcessStateMap.count(expr) == 0) {
       auto loc = newState();
@@ -725,10 +724,52 @@ public:
       // Ensure terminating location is in the graph
       ensureTermLocation();
 
+      bool actionReads = false;
+      vector<jani_var_name> varsToUnmark;
+      for (const auto& arg : act.arguments()) {
+        for (const auto& var : data::find_free_variables(arg)) {
+          auto varName = static_cast<string>(var.name());
+          auto janiVar = getVariable(varName);
+          if (requiresReading(janiVar)) {
+            actionReads = true; 
+            varsToUnmark.push_back(janiVar);
+            readingActions.insert(actionName);
+          }
+        }
+      }
+
+      json::array assignments({});
+      if (actionReads) {
+        assignments = compute_read_assignments(act);
+      }
+
+
+      for (auto& janiVar : varsToUnmark) {
+        unmarkForReading(janiVar);
+      }
+
+
+      if (!actionReads) {
+        // this is a writing action, so track its assignments
+        // so as to assign to transient variables later
+
+        uint i = 0;
+        for (auto& arg : act.arguments()) {
+          assignments.push_back(
+            json::object({
+              {"ref", to_string(i)},
+              {"value", convert_data_expression(arg)}
+            })
+          );
+          i++;
+        }
+      }
+
 
       // Ensure there's a transition from this location to the terminating location
       if (created) {
-        auto edge = makeEdge(locationName, TERMINATION_LOCATION_NAME, actionName);
+        auto edge = makeEdge(locationName, TERMINATION_LOCATION_NAME, actionName, assignments);
+
         addEdgeToAutomaton(edge);
       }
 
@@ -815,6 +856,10 @@ public:
 
       return locationName;
     } else if(is_process_instance(expr)) {
+      auto [locationName, created] = ensureLocationForExpression(symExpr);
+      if (!created) {
+        return locationName;
+      }
 
       // TODO:
       //   - compute pending assignments
@@ -838,10 +883,46 @@ public:
       return innerProcessLocation;
       
     } else if(is_sum(expr)) {
-      // TODO
-    
+      auto [locationName, created] = ensureLocationForExpression(symExpr);
+      if (!created) {
+        return locationName;
+      }
+      auto sumExpr = down_cast<sum>(expr);
+
+      enterScope();
+      for (auto& var : sumExpr.variables()) {
+        registerVar(var, currentProcessName);
+      }
+
+      auto innerProcessLocation = translateProcessExpression(sumExpr.operand());
+      // TODO: to something with the inner process you dummy :p
+
+      leaveScope();
+
+      return locationName;
     } else if(is_if_then(expr)) {
-      // TODO
+      auto [locationName, created] = ensureLocationForExpression(symExpr);
+      if (!created) {
+        return locationName;
+      }
+      auto ifThenExpr = down_cast<if_then>(expr);
+      // for each outgoing edge from the inner process location, copy it and add aguard with the condition
+      auto innerLocation = translateProcessExpression(ifThenExpr.then_case());
+      for (auto& edge : jani_automaton["edges"].as_array()) {
+        auto& edgeObj = edge.as_object();
+        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+        auto source = edgeObj["location"].as_string().c_str();
+
+        if (source == innerLocation) {
+          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
+          newEdge["location"] = locationName;
+          json::value guardExpression = convert_data_expression(ifThenExpr.condition());
+          newEdge["guard"] = json::object({{"exp", guardExpression}});
+          addEdgeToAutomaton(newEdge);
+        }
+      }
+
+      return locationName;
     }  else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
@@ -1233,7 +1314,7 @@ class jani_translator
   map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
-  set<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
+  multiset<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
     if (is_process_instance(expr)) {
       return {down_cast<process_instance>(expr)};
     }
@@ -1258,7 +1339,7 @@ class jani_translator
       throw jani_translation_error("Unsupported process expression encountered during pCRL process collection.");
     }
   }
-  set<process_instance> collectPcrlProcesses() {
+  multiset<process_instance> collectPcrlProcesses() {
     auto initialProcess = spec.init();
 
     return collectPcrlProcessesRec(initialProcess);
@@ -1430,7 +1511,7 @@ public:
   json::object translate_process_specification()
   {
 
-    set<process_instance> prclProcesses = collectPcrlProcesses();
+    multiset<process_instance> prclProcesses = collectPcrlProcesses();
     translateActions();
     auto syncsMatrix = buildSyncsMatrix();
 
