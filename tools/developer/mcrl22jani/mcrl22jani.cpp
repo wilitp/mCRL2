@@ -60,6 +60,11 @@ using namespace std;
 using namespace boost;
 
 
+// TODO: catch the (invalid) case where an automaton uses an action for writing and a latter one uses it for reading.
+//   - reading and writing actions should be both tracked explicitely, so we can check at every turn that an action is not being used
+//     in a different fashion than before.
+
+
 class jani_translation_error : public mcrl2::runtime_error
 {
   public:
@@ -684,6 +689,7 @@ public:
   }
 
 
+  // TODO: update signature to also carry pending assignments
   string translateProcessExpression(const process_expression& expr) {
 
     auto fv = process::find_free_variables(expr);
@@ -702,6 +708,10 @@ public:
 
 
     if(is_action(expr)) {
+
+      // TODO: 
+      //   - restore writing/reading actions related assignments here.
+      //   - put them in the indices 0 and 1 respectively
 
       // Ensure a location exists for this action
       auto [locationName, created] = ensureLocationForExpression(symExpr);
@@ -742,8 +752,8 @@ public:
 
       // for every outgoing transition from the left part:
       //   if it's to the terminating location, copy it but aiming from this location to the right part's location
-      //   if it's not, then copy it but aiming from this location to a new expression's we'll have to recurse on first on.
-      //   - this expression is `[the expression correponding to the aimed location] . [right part]`
+      //   if it's not, then copy it but aiming from this location to a new expression's we'll have to recurse on first.
+      //   this expression is `[the expression corresponding to the aimed location] . [right part]`
 
       for (auto& edge : jani_automaton["edges"].as_array()) {
         auto& edgeObj = edge.as_object();
@@ -767,6 +777,10 @@ public:
 
       return locationName;
     } else if(is_choice(expr)) {
+
+      // TODO:
+      //   - include pending assignments for subexpressions in the negative indices of their first transitions
+      //   - rewrite any guards in the first transitions according to this assignments
 
       // - Ensure a location exists for this choice
       auto [locationName, created] = ensureLocationForExpression(symExpr);
@@ -802,6 +816,8 @@ public:
       return locationName;
     } else if(is_process_instance(expr)) {
 
+      // TODO:
+      //   - compute pending assignments
       auto instance = down_cast<process_instance>(expr);
 
       auto eq = lookup_process_equation(instance.identifier());
@@ -912,7 +928,8 @@ public:
 
       jani_automaton["variables"] = localVariables;
 
-      // TODO: remove unreachable locations and edges.
+      // TODO: use the pending assignments to set initial values for local variables
+
       removeUnreachableLocationsAndEdges(initialLocation);
 
       return jani_automaton;
