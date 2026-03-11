@@ -90,6 +90,10 @@ json::value initial_value_for_sort(sort_expression sort) {
   {
     return 0;
   }
+  else if (data::sort_real::is_real(sort))
+  {
+    return 0;
+  }
   else
   {
     throw jani_translation_error("Jani only supports sorts bool, int, nat and pos. "
@@ -125,6 +129,10 @@ json::value convert_sort_expression(const data::sort_expression& sort)
   {
     return "int";
   }
+  else if (data::sort_real::is_real(sort))
+  {
+    return "real";
+  }
   else if (data::sort_nat::is_nat(sort))
   {
     return json::object{
@@ -155,15 +163,10 @@ using write_reads_map = map<string, vector<string>>;
 // assignment to be made on a transition leading to the initial state of a partial_automaton
 // this is a map and not a list because unguarded recursion is not allowed, so we won't have to worry
 // about multiple assignments to the same variable
-using pending_assignment_list = map<jani_var_name, vector<json::value>>;
+using pending_assignments = map<jani_var_name, json::value>;
 
 // tracks what states are considered initial and/or terminating in the
 // automaton associated to an expression.
-struct partial_automaton {
-  set<string> terminatingStatesNames;
-  string initialStateName;
-  pending_assignment_list pendingAssignments;
-};
 
 
 class pcrl_to_automaton_translator{
@@ -202,26 +205,27 @@ public:
       auto it = scopes.begin();
       scopes.erase(it, scopes.end());
     }
-    void registerVar(const variable& var, const string& processName, bool isParam = false) {
+    jani_var_name registerVar(const variable& var, const string& processName, bool isParam = false) {
       scope& scope = scopes.back();
       string baseName;
       auto varName = static_cast<string>(var.name());
       if (isParam) {
         baseName = processName + "_param_" + varName;
       } else {
-        baseName = processName + "_" + varName;
+        baseName = varName;
       }
       uint& counter = counters[baseName];
       jani_var_name jani_var = baseName;
 
-      if (!isParam) {
-        markForReading(jani_var);
-      }
       if (counter > 0 && !isParam) {
         jani_var += "_" + to_string(counter);
       }
 
-      if (counter == 0 || !isParam) {
+      if (!isParam) {
+        markForReading(jani_var);
+      }
+
+      if (!isParam) {
         localVariables.push_back(json::object{
           {"name", jani_var},
           {"initial-value",  initial_value_for_sort(var.sort())},
@@ -230,6 +234,7 @@ public:
       }
       scope.table[varName] = jani_var;
       counter++;
+      return jani_var;
     }
     void enterScope() {
       scopes.push_back(scope());
@@ -321,7 +326,7 @@ public:
     return json::object{
       {"action", action},
       {"location", source},
-      {"destinations", json::array({json::object({{"location", target}, {"assigments", assignments}})})},
+      {"destinations", json::array({json::object({{"location", target}, {"assignments", assignments}})})},
     };
   }
 
@@ -334,7 +339,7 @@ public:
 
     auto edge = json::object{
       {"location", source},
-      {"destinations", json::array({json::object({{"location", target}, {"assigments", assignments}})})},
+      {"destinations", json::array({json::object({{"location", target}, {"assignments", assignments}})})},
     };
 
     if (!guardExpression.empty()) {
@@ -353,9 +358,37 @@ public:
     json::array assignments;
     uint i = 0;
     auto actionName = pp(act.label());
-    for (auto& arg : act.arguments()) {
+    for (auto arg : act.arguments()) {
       auto errorMsg = "The action " + actionName + " has been marked as a reading action and can only get quantified, unread variables as arguments."
-          "the offending expression is " + pp(arg) + " of order " + to_string(i + 1) + ".";
+          " The offending expression is " + pp(arg) + ", argument number " + to_string(i + 1) + ".";
+
+
+      // NOTE: this might not be necessary as in our communication scheme, types of summation variables need to be
+      //       exactly the same as the ones specified in the action's declaration.
+      while (is_application(arg)) {
+        auto app = down_cast<application>(arg);
+        auto opid = pp(app.head());
+
+        
+        // allow cast to real numbers, but not explicit division
+        if(opid == "@cReal" && pp(app[1]) != "1") {
+          throw jani_translation_error(errorMsg);
+        } 
+
+        // allow cast to either int or pos
+        if (!(opid == "@cReal" || opid == "@cInt" || opid == "@cPos" || opid == "cNat")) {
+          throw jani_translation_error(errorMsg);
+        } 
+
+        // just pprinting for debugging purposes
+        vector<string> args;
+        string func = pp(app.function());
+        string head = pp(app.head());
+        for (size_t i = 0; i < app.size(); i++) {
+          args.push_back(pp(app[i]));
+        }
+        arg = (app)[0];
+      }
 
       if(!is_variable(arg)) {
         throw jani_translation_error(
@@ -384,40 +417,6 @@ public:
 
     return assignments;
   }
-
-  pending_assignment_list compute_process_assignments(const process_instance& instance) {
-
-    data_expression_list arguments = instance.actual_parameters();
-    auto eq = lookup_process_equation(instance.identifier());
-    variable_list parameters = eq.formal_parameters();
-
-    // TODO: if a parameter gets assigned a reading variable, mark the parameter as requiring reading
-    // calculate jani names to assign
-    vector<jani_var_name> lhss;
-    for (auto& param : parameters) {
-      lhss.push_back(getJaniVarForParam(static_cast<string>(param.name()).c_str(), pp(instance.identifier())));
-    }
-
-    // calculate jani expressions to assign
-    vector<json::value> rhss;
-    for (auto& arg : arguments) {
-      rhss.push_back(convert_data_expression(arg));
-    }
-
-    assert(lhss.size() == rhss.size());
-
-    // merge them into the assignments array
-    pending_assignment_list assignments;
-
-    for (uint i=0; i < lhss.size(); i++){
-      assignments.insert(
-        {lhss[i], vector<json::value>({rhss[i]})}
-      );
-    }
-
-    return assignments;
-  }
-
 
   json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
   {
@@ -565,87 +564,6 @@ public:
     }
   }
 
-  // unwinds automaton
-  //   - if initial state has no incoming edges, do nothing
-  //   - else, create a new initial state
-  //   - and copy each outgoing edge of the previous initial state 
-  //   - return the new automaton   
-  partial_automaton unwind(partial_automaton autom) {
-    auto& edges = jani_automaton["edges"].as_array();
-    partial_automaton newAutomaton;
-    newAutomaton.terminatingStatesNames = autom.terminatingStatesNames;
-    string initialState = autom.initialStateName;
-    bool hasIncomingEdges = false;
-    for (auto it = edges.begin(); it != edges.end(); it++) {
-      auto& edge = it->as_object();
-      auto target = edge["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-      if (target == initialState) {
-        hasIncomingEdges = true;
-        break;
-      }
-    }
-
-    if (hasIncomingEdges) {
-      json::object newInitialState = newState();
-      stateCounter++;
-      addStateToAutomaton(newInitialState);
-
-      vector<json::object> edgesToAdd;
-
-      for (auto it = edges.begin(); it != edges.end(); it++) {
-        auto edge = it->as_object(); // copies edge, we will modify and add it back as a new edge
-        auto target = edge["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-        if (target == initialState) {
-          edge["location"] = newInitialState["name"].as_string().c_str();
-          edgesToAdd.push_back(edge);
-        }
-      }
-      for (auto& edge : edgesToAdd) {
-        addEdgeToAutomaton(edge);
-      }
-
-      newAutomaton.initialStateName = newInitialState["name"].as_string().c_str();
-    } else {
-      newAutomaton.initialStateName = initialState;
-    }
-
-    return newAutomaton;
-  }
-
-  partial_automaton identifyInitialStates(partial_automaton autom1, partial_automaton autom2) {
-
-    // assume that initial states have no outgoing edges
-    // this is because this function is meant to be used after unwinding both automata
-    if (autom1.initialStateName == autom2.initialStateName) {
-      return autom1;
-    }
-    auto& edges = jani_automaton["edges"].as_array();
-
-    // we'll keep autom1's initial state
-    // and move edges from autom2's
-    // them remove autom2's initial state
-    vector<json::object> edgesToAdd;
-    for (auto it = edges.begin(); it != edges.end(); it++) {
-      json::value& edge = *it;
-      auto location = edge.at_pointer("/destinations/0/location").as_string().c_str();
-      if (location == autom2.initialStateName) {
-        edge.at_pointer("/destinations/0/location") = autom1.initialStateName;
-      }
-    }
-
-    // for (auto& pair : processInstanceStateMap) {
-    //   if (pair.second == autom2.initialStateName) {
-    //     pair.second = autom1.initialStateName;
-    //   }
-    // }
-
-    eraseStateByName(autom2.initialStateName);
-
-    autom1.terminatingStatesNames.insert(autom2.terminatingStatesNames.begin(), autom2.terminatingStatesNames.end());
-
-    return autom1;
-  }
-
   void ensureTermLocation() {
     // TODO: just save `found` in the class as `termLocationCreated`
     //       and skip the search
@@ -670,6 +588,12 @@ public:
   map<symbolic_process_expression, string>subProcessStateMap;
   map<string, symbolic_process_expression> locationSubProcessMap;
 
+  // used to set locations for sums, since their location is the location for its already
+  // translated body
+  void assignLocationForExpression(symbolic_process_expression expr, string locationName) {
+      subProcessStateMap.insert({expr, locationName});
+      locationSubProcessMap.insert({locationName, expr});
+  }
 
   pair<string, bool> ensureLocationForExpression(symbolic_process_expression expr) {
     // user code must have followed the equations and call this function
@@ -689,7 +613,7 @@ public:
 
 
   // TODO: update signature to also carry pending assignments
-  string translateProcessExpression(const process_expression& expr) {
+  pair<string, pending_assignments> translateProcessExpression(const process_expression& expr) {
 
     auto fv = process::find_free_variables(expr);
 
@@ -712,10 +636,14 @@ public:
       //   - restore writing/reading actions related assignments here.
       //   - put them in the indices 0 and 1 respectively
 
+      // TODO:
+      //   - check that quantified variables used in reading actions are *exactly* the same sort/type
+      //     although that might seem overly restrictive, mCRL2 itself doesn't handle those type mismatches at all
+
       // Ensure a location exists for this action
       auto [locationName, created] = ensureLocationForExpression(symExpr);
       if (!created) {
-        return locationName;
+        return {locationName, {}};
       }
 
       auto act = down_cast<action>(expr);
@@ -773,7 +701,7 @@ public:
         addEdgeToAutomaton(edge);
       }
 
-      return locationName;
+      return {locationName, {}};
 
     }  else if(is_seq(expr)) {
 
@@ -782,13 +710,13 @@ public:
       auto [locationName, created] = ensureLocationForExpression(symExpr); 
 
       if (!created) {
-        return locationName;
+        return {locationName, {}};
       }
 
       auto p = sequence.left(); 
       auto q = sequence.right(); 
-      auto leftLocation = translateProcessExpression(p);
-      auto rightLocation = translateProcessExpression(q);
+      auto [leftLocation, _] = translateProcessExpression(p);
+      auto [rightLocation, pendingAssignments] = translateProcessExpression(q);
 
 
       // for every outgoing transition from the left part:
@@ -796,6 +724,7 @@ public:
       //   if it's not, then copy it but aiming from this location to a new expression's we'll have to recurse on first.
       //   this expression is `[the expression corresponding to the aimed location] . [right part]`
 
+      // TODO: handle pending assignments while copying edges.
       for (auto& edge : jani_automaton["edges"].as_array()) {
         auto& edgeObj = edge.as_object();
         auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
@@ -808,7 +737,9 @@ public:
             addEdgeToAutomaton(newEdge);
           } else {
             auto newExpr = seq(locationSubProcessMap.at(target).first, q);
-            auto newLocation = translateProcessExpression(newExpr);
+
+            // new expression is a sequence, we know it won't have pending assignments
+            auto [newLocation, _] = translateProcessExpression(newExpr);
 
             newEdge["destinations"].as_array()[0].as_object()["location"] = newLocation;
             addEdgeToAutomaton(newEdge);
@@ -816,7 +747,7 @@ public:
         }
       }
 
-      return locationName;
+      return {locationName, {}};
     } else if(is_choice(expr)) {
 
       // TODO:
@@ -826,13 +757,13 @@ public:
       // - Ensure a location exists for this choice
       auto [locationName, created] = ensureLocationForExpression(symExpr);
       if (!created) {
-        return locationName;
+        return {locationName, {}};
       }
       auto choiceExpr = down_cast<choice>(expr);
       auto p = choiceExpr.left();
       auto q = choiceExpr.right();
-      auto leftLocation = translateProcessExpression(p);
-      auto rightLocation = translateProcessExpression(q);
+      auto [leftLocation, leftPendingAssignments] = translateProcessExpression(p);
+      auto [rightLocation, rightPendingAssignments] = translateProcessExpression(q);
 
       // - For each outgoing transition of the left side, copy it but going out of this location
       for (auto& edge : jani_automaton["edges"].as_array()) {
@@ -854,39 +785,64 @@ public:
         }
       }
 
-      return locationName;
+      return {locationName, {}};
     } else if(is_process_instance(expr)) {
-      auto [locationName, created] = ensureLocationForExpression(symExpr);
-      if (!created) {
-        return locationName;
-      }
 
-      // TODO:
-      //   - compute pending assignments
       auto instance = down_cast<process_instance>(expr);
+
+      // set current process name
+      currentProcessName = pp(instance.identifier());
 
       auto eq = lookup_process_equation(instance.identifier());
       auto processExpr = eq.expression();
 
-      // register variables in symbol table
+      vector<jani_var_name> lhs;
+      vector<json::value> rhs;
+      map<jani_var_name, json::value> pendingAssignments;
+
+      for (const auto& arg : instance.actual_parameters()) {
+        rhs.push_back(convert_data_expression(arg));
+      }
+
+      // register process params in symbol table
+      // and get lhs for the instance's pending assignments
       enterProcessScope();
       variable_list params = eq.formal_parameters();
       for (auto& param : params) {
-        registerVar(param, pp(eq.identifier()), true);
+        lhs.push_back(registerVar(param, pp(eq.identifier()), true));
       }
 
-      auto innerProcessLocation = translateProcessExpression(processExpr);
+      assert(lhs.size() == rhs.size());
+      for (size_t i = 0; i < lhs.size(); ++i) {
+        pendingAssignments[lhs[i]] = rhs[i];
+      }
+
+      auto [innerProcessLocation, innerPendingAssignments] = translateProcessExpression(processExpr);
+
+      // variable only used for assertion later
+      uint assignAmount = pendingAssignments.size() + innerPendingAssignments.size();
+
+      // combine all assignments
+      pendingAssignments.merge(innerPendingAssignments);
+
+      // Inner and outer assignments should be disjoint, as unguarded recursion is not allowed
+      assert(pendingAssignments.size() == assignAmount);
 
       subProcessStateMap.insert({symExpr, innerProcessLocation});
       leaveScope();
 
-      return innerProcessLocation;
+      return {innerProcessLocation, pendingAssignments};
       
     } else if(is_sum(expr)) {
+      // NOTE: - if we do create a location for this sum, i.e it's the first time we see it,
+      //       this location will be overwritten. 
+      //       - the snippet below will, upon seeing this sum again, return the location for the body, 
+      //       since that's the location we set for this sum right after translating the body.
       auto [locationName, created] = ensureLocationForExpression(symExpr);
       if (!created) {
-        return locationName;
+        return {locationName, {}};
       }
+
       auto sumExpr = down_cast<sum>(expr);
 
       enterScope();
@@ -894,20 +850,23 @@ public:
         registerVar(var, currentProcessName);
       }
 
-      auto innerProcessLocation = translateProcessExpression(sumExpr.operand());
-      // TODO: to something with the inner process you dummy :p
+      auto [innerProcessLocation, pendingAssignments] = translateProcessExpression(sumExpr.operand());
+
+      assignLocationForExpression(symExpr, innerProcessLocation);
 
       leaveScope();
 
-      return locationName;
+      return {innerProcessLocation, pendingAssignments};
     } else if(is_if_then(expr)) {
       auto [locationName, created] = ensureLocationForExpression(symExpr);
       if (!created) {
-        return locationName;
+        return {locationName, {}};
       }
       auto ifThenExpr = down_cast<if_then>(expr);
       // for each outgoing edge from the inner process location, copy it and add aguard with the condition
-      auto innerLocation = translateProcessExpression(ifThenExpr.then_case());
+      auto [innerLocation, pendingAssignments] = translateProcessExpression(ifThenExpr.then_case());
+
+      // TODO: handle pending assignments while copying edges
       for (auto& edge : jani_automaton["edges"].as_array()) {
         auto& edgeObj = edge.as_object();
         auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
@@ -922,7 +881,7 @@ public:
         }
       }
 
-      return locationName;
+      return {locationName, {}};
     }  else {
       throw jani_translation_error("Unsupported process expression encountered during translation.");
     }
@@ -1003,7 +962,7 @@ public:
 
     json::object translate(){
 
-      auto initialLocation = translateProcessExpression(initial_process_call);
+      auto [initialLocation, pendingAssignments] = translateProcessExpression(initial_process_call);
 
       jani_automaton["initial-locations"] = json::array({initialLocation});
 
@@ -1601,29 +1560,29 @@ public:
         // if edge executes writing action, then add missing assignments
 
         bool isWritingAction = edge.contains("action") && edge.at("action").is_string() && !readingActions.contains(actionName = edge.at("action").as_string().c_str());
-        bool hasAssignments = edge.contains("assignments") && edge.at("assignments").is_array() && edge.at("assignments").as_array().size() > 0;
+        auto destination = (edge.at("destinations").as_array()[0]).as_object();
+        bool hasAssignments = destination.contains("assignments") && destination.at("assignments").is_array() && destination.at("assignments").as_array().size() > 0;
         if (isWritingAction && hasAssignments) {
           json::object newEdge;
           json::array newAssignments;
           newEdge["action"] = actionName;
           newEdge["location"] = edge["location"];
-          newEdge["destinations"] = edge["destinations"];
 
-          for (uint i = 0; i < edge.at("assignments").as_array().size(); i++) {
+          for (uint i = 0; i < destination.at("assignments").as_array().size(); i++) {
             for (auto& readAction : writeToReads[actionName]) {
-              string postfix = edge.at("assignments").at(i).at("ref").as_string().c_str();
+              string postfix = destination.at("assignments").at(i).at("ref").as_string().c_str();
               string ref = readAction + "_" + postfix; 
-              json::value val = edge.at("assignments").at(i).at("value");
+              json::value val = destination.at("assignments").at(i).at("value");
 
               newAssignments.push_back(json::object({
                 {"value", val},
                 {"ref", ref}
               }));
             }
-
           }
 
-          newEdge["assignments"] = newAssignments;
+          destination["assignments"] = newAssignments;
+          newEdge["destinations"] = json::array({destination});
           newEdges.push_back(newEdge);
           
         } else {
