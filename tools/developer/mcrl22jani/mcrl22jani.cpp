@@ -10,6 +10,7 @@
 /// \brief This tool linearises mcrl2 specifications into linear
 ///         form.
 
+#include <limits>
 #include "mcrl2/atermpp/aterm.h"
 #include "mcrl2/data/enumerator.h"
 #include "mcrl2/data/fourier_motzkin.h"
@@ -163,7 +164,7 @@ using write_reads_map = map<string, vector<string>>;
 // assignment to be made on a transition leading to the initial state of a partial_automaton
 // this is a map and not a list because unguarded recursion is not allowed, so we won't have to worry
 // about multiple assignments to the same variable
-using pending_assignments = map<jani_var_name, json::value>;
+using pending_assignments = list<json::array>;
 
 // tracks what states are considered initial and/or terminating in the
 // automaton associated to an expression.
@@ -225,13 +226,13 @@ public:
         markForReading(jani_var);
       }
 
-      if (!isParam) {
+      if (!isParam || (isParam && counter == 0)) {
         localVariables.push_back(json::object{
           {"name", jani_var},
           {"initial-value",  initial_value_for_sort(var.sort())},
           {"type", convert_sort_expression(var.sort())}
         });
-      }
+      } 
       scope.table[varName] = jani_var;
       counter++;
       return jani_var;
@@ -303,6 +304,8 @@ public:
   }
 
   void addEdgeToAutomaton(const json::object& edge) {
+    string source = edge.at("location").as_string().c_str();
+    string target = edge.at("destinations").at(0).at("location").as_string().c_str();
     jani_automaton["edges"].as_array().push_back(edge);
   }
 
@@ -539,7 +542,6 @@ public:
   void eraseStateByName(string removedStateName) {
     auto& states = jani_automaton["locations"].as_array();
     for (auto it = states.begin();it != states.end(); it++) {
-      // TODO: extract state removal logic
       auto stateName = it->as_object()["name"].as_string().c_str();
       if (
         stateName == removedStateName
@@ -611,8 +613,65 @@ public:
     }
   }
 
+  // Inserts pending assignments to an edge, after the existing assignments (if any).
+  void insertPendingAssignmentsAfter(json::object& edge, pending_assignments pendingAssignments) {
 
-  // TODO: update signature to also carry pending assignments
+    json::array newAssignments;
+
+    // By default, we are inserting assignments starting on index 2
+    int baseIndex = 2;
+
+    bool edgeHasAssignments = edge.at("destinations").at(0).as_object().contains("assignments");
+
+    // increase the base index one further than the maximum index in existing assignments
+    if (edgeHasAssignments) {
+      auto existingAssignments = edge.at("destinations").at(0).as_object().at("assignments").as_array();
+      for (const auto& assignment : existingAssignments) {
+        int currentIndex;
+        if (assignment.as_object().contains("index")) {
+          currentIndex = assignment.as_object().at("index").as_int64();
+        } else {
+          currentIndex = 0;
+        }
+        if (currentIndex >= baseIndex) {
+          baseIndex = currentIndex + 1;
+        }
+
+        newAssignments.push_back(assignment);
+      }
+    }
+
+    // add pending assignments with increasing index starting from baseIndex
+    for (auto& atomicAssignmentSet : pendingAssignments) {
+      for (auto& assignment : atomicAssignmentSet) {
+        assignment.as_object()["index"] = baseIndex;
+        newAssignments.push_back(assignment);
+        baseIndex++;
+      }
+    }
+
+    auto& destination =  edge.at("destinations").at(0).as_object();
+    destination["assignments"] = newAssignments;
+  }
+
+  // Inserts pending assignments to an edge, before the existing assignments (if any).
+  void insertPendingAssignmentsBefore(json::value& edge, pending_assignments pendingAssignments) {
+    // By default, we are inserting assignments starting on index 2
+    int baseIndex = -1;
+
+    // decrease the base index one further than the minimum index in existing assignments
+    if (edge.as_object().contains("assignments")) {
+      auto existingAssignments = edge.as_object()["assignments"].as_array();
+      for (const auto& assignment : existingAssignments) {
+        int currentIndex = assignment.as_object().at("index").as_int64();
+        if (currentIndex <= baseIndex) {
+          baseIndex = currentIndex - 1;
+        }
+      }
+    }
+  }
+
+
   pair<string, pending_assignments> translateProcessExpression(const process_expression& expr) {
 
     auto fv = process::find_free_variables(expr);
@@ -629,12 +688,11 @@ public:
       getVariable(pp(var.name()));
     }
 
+    // just for debugging
+    string exprs =  pp(expr);
+
 
     if(is_action(expr)) {
-
-      // TODO: 
-      //   - restore writing/reading actions related assignments here.
-      //   - put them in the indices 0 and 1 respectively
 
       // TODO:
       //   - check that quantified variables used in reading actions are *exactly* the same sort/type
@@ -703,7 +761,7 @@ public:
 
       return {locationName, {}};
 
-    }  else if(is_seq(expr)) {
+    } else if(is_seq(expr)) {
 
       auto sequence = down_cast<seq>(expr);
 
@@ -715,6 +773,8 @@ public:
 
       auto p = sequence.left(); 
       auto q = sequence.right(); 
+
+      // left part shouldn't have pending assignments, as we don't allow for process instances to ocurr
       auto [leftLocation, _] = translateProcessExpression(p);
       auto [rightLocation, pendingAssignments] = translateProcessExpression(q);
 
@@ -725,6 +785,7 @@ public:
       //   this expression is `[the expression corresponding to the aimed location] . [right part]`
 
       // TODO: handle pending assignments while copying edges.
+      vector<json::object> newEdges;
       for (auto& edge : jani_automaton["edges"].as_array()) {
         auto& edgeObj = edge.as_object();
         auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
@@ -734,17 +795,21 @@ public:
           newEdge["location"] = locationName;
           if (edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str() == TERMINATION_LOCATION_NAME) {
             newEdge["destinations"].as_array()[0].as_object()["location"] = rightLocation;
-            addEdgeToAutomaton(newEdge);
+            insertPendingAssignmentsAfter(newEdge, pendingAssignments);
+            newEdges.push_back(newEdge);
           } else {
             auto newExpr = seq(locationSubProcessMap.at(target).first, q);
 
             // new expression is a sequence, we know it won't have pending assignments
             auto [newLocation, _] = translateProcessExpression(newExpr);
-
             newEdge["destinations"].as_array()[0].as_object()["location"] = newLocation;
-            addEdgeToAutomaton(newEdge);
+            newEdges.push_back(newEdge);
           }
         }
+      }
+
+      for (auto& newEdge : newEdges) {
+        addEdgeToAutomaton(newEdge);
       }
 
       return {locationName, {}};
@@ -798,7 +863,7 @@ public:
 
       vector<jani_var_name> lhs;
       vector<json::value> rhs;
-      map<jani_var_name, json::value> pendingAssignments;
+      json::array pendingAssignments;
 
       for (const auto& arg : instance.actual_parameters()) {
         rhs.push_back(convert_data_expression(arg));
@@ -814,24 +879,28 @@ public:
 
       assert(lhs.size() == rhs.size());
       for (size_t i = 0; i < lhs.size(); ++i) {
-        pendingAssignments[lhs[i]] = rhs[i];
+        pendingAssignments.push_back(
+          json::object{
+            {"ref", lhs[i]},
+            {"value", rhs[i]},
+            {"index", 0}
+          });
       }
 
       auto [innerProcessLocation, innerPendingAssignments] = translateProcessExpression(processExpr);
 
-      // variable only used for assertion later
+      // TODO: delte this assertion
       uint assignAmount = pendingAssignments.size() + innerPendingAssignments.size();
 
       // combine all assignments
-      pendingAssignments.merge(innerPendingAssignments);
+      innerPendingAssignments.push_front(pendingAssignments);
 
       // Inner and outer assignments should be disjoint, as unguarded recursion is not allowed
       assert(pendingAssignments.size() == assignAmount);
 
-      subProcessStateMap.insert({symExpr, innerProcessLocation});
       leaveScope();
 
-      return {innerProcessLocation, pendingAssignments};
+      return {innerProcessLocation, innerPendingAssignments};
       
     } else if(is_sum(expr)) {
       // NOTE: - if we do create a location for this sum, i.e it's the first time we see it,
@@ -852,11 +921,21 @@ public:
 
       auto [innerProcessLocation, pendingAssignments] = translateProcessExpression(sumExpr.operand());
 
-      assignLocationForExpression(symExpr, innerProcessLocation);
+      // copy all outgoing edges from the inner process location to this location, as sums don't have their own behavior, they just introduce new variables
+      for (auto& edge : jani_automaton["edges"].as_array()) {
+        auto& edgeObj = edge.as_object();
+        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+        auto source = edgeObj["location"].as_string().c_str();
+        if (source == innerProcessLocation) {
+          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
+          newEdge["location"] = locationName;
+          addEdgeToAutomaton(newEdge);
+        }
+      }
 
       leaveScope();
 
-      return {innerProcessLocation, pendingAssignments};
+      return {locationName, pendingAssignments};
     } else if(is_if_then(expr)) {
       auto [locationName, created] = ensureLocationForExpression(symExpr);
       if (!created) {
@@ -1570,14 +1649,20 @@ public:
 
           for (uint i = 0; i < destination.at("assignments").as_array().size(); i++) {
             for (auto& readAction : writeToReads[actionName]) {
+              auto newAssignment = destination.at("assignments").at(i).as_object();
               string postfix = destination.at("assignments").at(i).at("ref").as_string().c_str();
               string ref = readAction + "_" + postfix; 
               json::value val = destination.at("assignments").at(i).at("value");
 
-              newAssignments.push_back(json::object({
-                {"value", val},
-                {"ref", ref}
-              }));
+              newAssignment["ref"] = ref;
+              newAssignment["value"] = val;
+
+              newAssignments.push_back(newAssignment);
+
+              // newAssignments.push_back(json::object({
+              //   {"value", val},
+              //   {"ref", ref}
+              // }));
             }
           }
 
