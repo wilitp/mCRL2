@@ -671,6 +671,35 @@ public:
     }
   }
 
+  void strengthenGuardOfEdge(json::object& edge, json::value guardExpression) {
+    if (edge.contains("guard")) {
+      auto newGuardExpression = json::object{
+        {"op", reinterpret_cast<const char*>(u8"∧")},
+        {"left", edge["guard"].as_object().at("exp")},
+        {"right", guardExpression}
+      };
+      edge["guard"] = json::object{
+        {"exp", newGuardExpression}
+      };
+    } else {
+      edge["guard"] = json::object{
+        {"exp", guardExpression}
+      };
+    }
+  }
+
+  // Negates a guard expression
+  json::object negateGuardExpression(json::value guardExpression) {
+    if (guardExpression.as_object().contains("op") && guardExpression.at("op").as_string().c_str() == "¬") {
+      return guardExpression.at("exp").as_object();
+    } else {
+      return json::object{
+        {"op", reinterpret_cast<const char*>(u8"¬")},
+        {"exp", guardExpression}
+      };
+    }
+  }
+
 
   pair<string, pending_assignments> translateProcessExpression(const process_expression& expr) {
 
@@ -949,7 +978,50 @@ public:
           json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
           newEdge["location"] = locationName;
           json::value guardExpression = convert_data_expression(ifThenExpr.condition());
-          newEdge["guard"] = json::object({{"exp", guardExpression}});
+          strengthenGuardOfEdge(newEdge, guardExpression);
+          addEdgeToAutomaton(newEdge);
+        }
+      }
+
+      return {locationName, {}};
+    } else if(is_if_then_else(expr)) {
+      auto [locationName, created] = ensureLocationForExpression(symExpr);
+      if (!created) {
+        return {locationName, {}};
+      }
+      auto ifThenExpr = down_cast<if_then_else>(expr);
+      // for each outgoing edge from the inner process location, copy it and add aguard with the condition
+      auto [thenInnerLocation, thenPendingAssignments] = translateProcessExpression(ifThenExpr.then_case());
+
+      // TODO: handle pending assignments while copying edges
+      for (auto& edge : jani_automaton["edges"].as_array()) {
+        auto& edgeObj = edge.as_object();
+        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+        auto source = edgeObj["location"].as_string().c_str();
+
+        if (source == thenInnerLocation) {
+          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
+          newEdge["location"] = locationName;
+          json::value guardExpression = convert_data_expression(ifThenExpr.condition());
+          strengthenGuardOfEdge(newEdge, guardExpression);
+          addEdgeToAutomaton(newEdge);
+        }
+      }
+
+      // for each outgoing edge from the inner process location, copy it and add aguard with the condition
+      auto [elseInnerLocation, elsePendingAssignments] = translateProcessExpression(ifThenExpr.else_case());
+
+      // TODO: handle pending assignments while copying edges
+      for (auto& edge : jani_automaton["edges"].as_array()) {
+        auto& edgeObj = edge.as_object();
+        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
+        auto source = edgeObj["location"].as_string().c_str();
+
+        if (source == elseInnerLocation) {
+          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
+          newEdge["location"] = locationName;
+          json::value guardExpression = convert_data_expression(ifThenExpr.condition());
+          strengthenGuardOfEdge(newEdge, negateGuardExpression(guardExpression));
           addEdgeToAutomaton(newEdge);
         }
       }
