@@ -774,7 +774,7 @@ public:
       auto p = sequence.left(); 
       auto q = sequence.right(); 
 
-      // left part shouldn't have pending assignments, as we don't allow for process instances to ocurr
+      // left part shouldn't have pending assignments, as we don't allow for process instances to occur
       auto [leftLocation, _] = translateProcessExpression(p);
       auto [rightLocation, pendingAssignments] = translateProcessExpression(q);
 
@@ -889,14 +889,8 @@ public:
 
       auto [innerProcessLocation, innerPendingAssignments] = translateProcessExpression(processExpr);
 
-      // TODO: delte this assertion
-      uint assignAmount = pendingAssignments.size() + innerPendingAssignments.size();
-
       // combine all assignments
       innerPendingAssignments.push_front(pendingAssignments);
-
-      // Inner and outer assignments should be disjoint, as unguarded recursion is not allowed
-      assert(pendingAssignments.size() == assignAmount);
 
       leaveScope();
 
@@ -1636,26 +1630,32 @@ public:
         auto edge = edgeV.as_object();
         string actionName;
 
-        // if edge executes writing action, then add missing assignments
 
         bool isWritingAction = edge.contains("action") && edge.at("action").is_string() && !readingActions.contains(actionName = edge.at("action").as_string().c_str());
         auto destination = (edge.at("destinations").as_array()[0]).as_object();
         bool hasAssignments = destination.contains("assignments") && destination.at("assignments").is_array() && destination.at("assignments").as_array().size() > 0;
         if (isWritingAction && hasAssignments) {
-          json::object newEdge;
+          json::object newEdge = edge;
           json::array newAssignments;
-          newEdge["action"] = actionName;
-          newEdge["location"] = edge["location"];
+          // newEdge["action"] = actionName;
+          // newEdge["location"] = edge["location"];
 
           for (uint i = 0; i < destination.at("assignments").as_array().size(); i++) {
+            string oldRef = destination.at("assignments").at(i).at("ref").as_string().c_str();
+
+            // variables won't have a digit as a first character
+            // this way we know this is a writing actions assignment
             for (auto& readAction : writeToReads[actionName]) {
               auto newAssignment = destination.at("assignments").at(i).as_object();
-              string postfix = destination.at("assignments").at(i).at("ref").as_string().c_str();
-              string ref = readAction + "_" + postfix; 
-              json::value val = destination.at("assignments").at(i).at("value");
 
-              newAssignment["ref"] = ref;
-              newAssignment["value"] = val;
+              // if edge executes writing action, then add missing assignments
+              if(isdigit(oldRef[0])) {
+                string ref = readAction + "_" + oldRef; 
+                json::value val = destination.at("assignments").at(i).at("value");
+
+                newAssignment["ref"] = ref;
+                newAssignment["value"] = val;
+              }
 
               newAssignments.push_back(newAssignment);
 
