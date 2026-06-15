@@ -61,11 +61,6 @@ using namespace std;
 using namespace boost;
 
 
-// TODO: catch the (invalid) case where an automaton uses an action for writing and a latter one uses it for reading.
-//   - reading and writing actions should be both tracked explicitely, so we can check at every turn that an action is not being used
-//     in a different fashion than before.
-
-
 class jani_translation_error : public mcrl2::runtime_error
 {
   public:
@@ -73,6 +68,8 @@ class jani_translation_error : public mcrl2::runtime_error
     : mcrl2::runtime_error(message)
   {}
 };
+
+using actionSet = set<string>;
 
 json::value initial_value_for_sort(sort_expression sort) {
   if (data::sort_bool::is_bool(sort))
@@ -102,22 +99,6 @@ json::value initial_value_for_sort(sort_expression sort) {
   }
 }
 
-class scope {
-  public:
-    // maps variable names to their allocated local 
-    // variable in the JANI automaton.
-    map<string, string> table;
-    bool isProcessScope = false;
-
-    scope() = default;
-
-    scope(bool isProcessScope) : isProcessScope(isProcessScope) {}
-};
-
-using jani_var_name = string;
-using mcrl2_var_name = string;
-
-using readingActionSet = set<string>;
 
 
 json::value convert_sort_expression(const data::sort_expression& sort)
@@ -157,125 +138,39 @@ json::value convert_sort_expression(const data::sort_expression& sort)
   }
 }
 
-using incomplete_edge_assignments = vector<pair<json::object*, vector<json::value>>>;
-
 using write_reads_map = map<string, vector<string>>;
 
-// assignment to be made on a transition leading to the initial state of a partial_automaton
-// this is a map and not a list because unguarded recursion is not allowed, so we won't have to worry
-// about multiple assignments to the same variable
-using pending_assignments = list<json::array>;
+// this type represents locations, whatever that is at the moment
+// if L1 and L2 are of type abstract_location and they represent
+// the same location in terms of our theory, then it should hold that
+// L1 != L2
+// Ensure the types used to define this type always make this hold or
+// override behaviors as needed
 
-// tracks what states are considered initial and/or terminating in the
-// automaton associated to an expression.
+// Sentinel location for successful termination (√). mCRL2's process_expression
+// has no such constructor, so we add one here.
+struct termination_t {
+  auto operator<=>(const termination_t&) const = default;
+};
 
+using abstract_location = std::variant<process_expression, termination_t>;
 
 class pcrl_to_automaton_translator{
 private:
 
-    incomplete_edge_assignments& incompleteEdgeAssignments;
-
-    readingActionSet readingActions;
-
     string currentProcessName;
-
-    json::array localVariables;
-    vector<scope> scopes;
-    // if a variable is declared already, we need to append a number since
-    // automaton variables don't have scopes.
-    // Note: this is redundant, since variables in the table will have the numbers,
-    // this just makes it faster to find the next available number.
-    map<jani_var_name, uint> counters;
-    // keeps track of whether a variable needs to be read
-    set<jani_var_name> readSet;
 public:
 
-    bool requiresReading(const jani_var_name& var) const {
-      return readSet.contains(var);
-    }
-
-    void unmarkForReading(const jani_var_name& var) {
-      readSet.erase(var);
-    }
-
-    void markForReading(const jani_var_name& var) {
-      readSet.insert(var);
-    }
-
-    void clearScopes() {
-      auto it = scopes.begin();
-      scopes.erase(it, scopes.end());
-    }
-    jani_var_name registerVar(const variable& var, const string& processName, bool isParam = false) {
-      scope& scope = scopes.back();
-      string baseName;
-      auto varName = static_cast<string>(var.name());
-      if (isParam) {
-        baseName = processName + "_param_" + varName;
-      } else {
-        baseName = varName;
-      }
-      uint& counter = counters[baseName];
-      jani_var_name jani_var = baseName;
-
-      if (counter > 0 && !isParam) {
-        jani_var += "_" + to_string(counter);
-      }
-
-      if (!isParam) {
-        markForReading(jani_var);
-      }
-
-      if (!isParam || (isParam && counter == 0)) {
-        localVariables.push_back(json::object{
-          {"name", jani_var},
-          {"initial-value",  initial_value_for_sort(var.sort())},
-          {"type", convert_sort_expression(var.sort())}
-        });
-      } 
-      scope.table[varName] = jani_var;
-      counter++;
-      return jani_var;
-    }
-    void enterScope() {
-      scopes.push_back(scope());
-    }
-
-    void enterProcessScope() {
-      scopes.push_back(scope(true));
-    }
-
-    void leaveScope() {
-      scopes.pop_back();
-    }
-
-    jani_var_name getVariable(mcrl2_var_name name) const {
-      for(auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
-        auto scope = *it;
-        if (scope.table.find(name) != scope.table.end()) {
-          return scope.table[name];
-        }
-        if (scope.isProcessScope) {
-          // don't look past the current process scope
-          break;
-        }
-      }
-      throw jani_translation_error("Variable not found in symbol table: " + name);
-    }
 
   private:
     process::process_specification spec;
     json::object jani_automaton;
     const process_instance& initial_process_call;
-    // keeps track of states in sequential compositions
-    vector<json::object> sequentialCompositionStack; 
     uint stateCounter = 0;
-    json::object deltaState;
+    json::object deltaLocation;
 
     const string DELTA_LOCATION_NAME = "delta_state";
     const string TERMINATION_LOCATION_NAME = "termination";
-    map<string, string> processInstanceStateMap;
-    map<string, string> stateProcessInstanceMap;
 
 
   json::object newState() {
@@ -290,12 +185,12 @@ public:
   }
 
   
-  void ensureDeltaState() {
-    if (deltaState.empty()) {
-      deltaState = json::object{
+  void ensureDeltaLocation() {
+    if (deltaLocation.empty()) {
+      deltaLocation = json::object{
         {"name", DELTA_LOCATION_NAME}
       };
-      addStateToAutomaton(deltaState);
+      addStateToAutomaton(deltaLocation);
     }
   }
 
@@ -352,158 +247,413 @@ public:
     return edge;
   }
 
-  jani_var_name getJaniVarForParam(const string& param, const string& processName) {
-    return processName + "_param_" + param;
+  // computes the `destinations` to put in a transition
+  // leading to process p
+  json::array stoch(process_expression p) {
+    // TODO: implement by structural recursion
+    // NOTE: this won't need
 
+    if (is_action(p)){
+
+    } else if(is_delta(p)) {
+
+    } else if (is_stochastic_operator(p)) {
+      
+    } else if (is_seq(p)) {
+
+    } else if (is_choice(p)) {
+
+    } else if (is_if_then(p)) {
+
+    } else if (is_if_then(p)) {
+
+    } else if (is_sum(p)) {
+
+    } else if (is_process_instance(p)) {
+
+    } else {
+      throw jani_translation_error(
+        "Expression " + pp(p) + " not supported by Stoch");
+    }
   }
 
-  json::array compute_read_assignments(const action& act) {
-    json::array assignments;
-    uint i = 0;
-    auto actionName = pp(act.label());
-    for (auto arg : act.arguments()) {
-      auto errorMsg = "The action " + actionName + " has been marked as a reading action and can only get quantified, unread variables as arguments."
-          " The offending expression is " + pp(arg) + ", argument number " + to_string(i + 1) + ".";
-
-
-      // NOTE: this might not be necessary as in our communication scheme, types of summation variables need to be
-      //       exactly the same as the ones specified in the action's declaration.
-      while (is_application(arg)) {
-        auto app = down_cast<application>(arg);
-        auto opid = pp(app.head());
-
-        
-        // allow cast to real numbers, but not explicit division
-        if(opid == "@cReal" && pp(app[1]) != "1") {
-          throw jani_translation_error(errorMsg);
-        } 
-
-        // allow cast to either int or pos
-        if (!(opid == "@cReal" || opid == "@cInt" || opid == "@cPos" || opid == "cNat")) {
-          throw jani_translation_error(errorMsg);
-        } 
-
-        // just pprinting for debugging purposes
-        vector<string> args;
-        string func = pp(app.function());
-        string head = pp(app.head());
-        for (size_t i = 0; i < app.size(); i++) {
-          args.push_back(pp(app[i]));
+  // Helper function: Get maximum index from an assignment list
+  // Returns -1 if the list is empty
+  int get_max_index(const json::array& as) {
+    int max_idx = -1;
+    for (const auto& assignment : as) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        if (obj.contains("index")) {
+          auto idx_val = obj.at("index");
+          if (idx_val.is_int64()) {
+            int idx = static_cast<int>(idx_val.as_int64());
+            if (idx > max_idx) {
+              max_idx = idx;
+            }
+          }
         }
-        arg = (app)[0];
       }
+    }
+    return max_idx;
+  }
 
-      if(!is_variable(arg)) {
-        throw jani_translation_error(
-          errorMsg
-        );
-      } 
-
-      
-      auto var = down_cast<variable>(arg);
-
-      jani_var_name jani_var = getVariable(pp(var.name()));
-      if(!requiresReading(jani_var)) {
-        throw jani_translation_error(errorMsg + " Variable was not marked for reading");
+  // Helper function: Get minimum index from an assignment list
+  // Returns INT_MAX if the list is empty
+  int get_min_index(const json::array& as) {
+    int min_idx = INT_MAX;
+    for (const auto& assignment : as) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        if (obj.contains("index")) {
+          auto idx_val = obj.at("index");
+          if (idx_val.is_int64()) {
+            int idx = static_cast<int>(idx_val.as_int64());
+            if (idx < min_idx) {
+              min_idx = idx;
+            }
+          }
+        }
       }
+    }
+    return min_idx;
+  }
 
-      // assign from global transient variable [actionName][index or signature parameter]
-      assignments.push_back(
-        json::object({
-          {"ref", getVariable(var.name())},
-          {"value", actionName + "_" + to_string(i)},
-          {"index", 1}
-        })
-      );
-      i++;
+  // coin(as1, as2): Find the set of variables assigned in both lists
+  set<string> coin(const json::array& as1, const json::array& as2) {
+    set<string> vars_as1;
+    set<string> common;
+
+    // Collect all variables in as1
+    for (const auto& assignment : as1) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        if (obj.contains("ref")) {
+          auto ref_val = obj.at("ref");
+          if (ref_val.is_string()) {
+            vars_as1.insert(string(ref_val.as_string()));
+          }
+        }
+      }
     }
 
-    return assignments;
+    // Find common variables in as2
+    for (const auto& assignment : as2) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        if (obj.contains("ref")) {
+          auto ref_val = obj.at("ref");
+          if (ref_val.is_string()) {
+            string var = string(ref_val.as_string());
+            if (vars_as1.find(var) != vars_as1.end()) {
+              common.insert(var);
+            }
+          }
+        }
+      }
+    }
+
+    return common;
   }
+
+  // restrict_assignments(as, vs): Filter assignments to only those for variables in set vs
+  json::array restrict_assignments(const json::array& as, const set<string>& vars) {
+    json::array result;
+    for (const auto& assignment : as) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        if (obj.contains("ref")) {
+          auto ref_val = obj.at("ref");
+          if (ref_val.is_string()) {
+            string var = string(ref_val.as_string());
+            if (vars.find(var) != vars.end()) {
+              result.push_back(assignment);
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  // iconcat(as1, as2): Concatenate assignment lists with index shifting
+  // - Indices of as2 are incremented by max(as1) + 1
+  // - Variables appearing in both lists are excluded from the result
+  json::array iconcat(const json::array& as1, const json::array& as2) {
+    // Compute coin(as1, as2) - variables appearing in both
+    set<string> common_vars = coin(as1, as2);
+
+    // Get the maximum index from as1
+    int max_idx_as1 = get_max_index(as1);
+    int index_shift = max_idx_as1 + 1;
+
+    json::array result;
+
+    // Add all assignments from as1
+    for (const auto& assignment : as1) {
+      result.push_back(assignment);
+    }
+
+    // Add assignments from as2 with shifted indices, excluding common variables
+    for (const auto& assignment : as2) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        string var;
+
+        // Extract variable name
+        if (obj.contains("ref")) {
+          auto ref_val = obj.at("ref");
+          if (ref_val.is_string()) {
+            var = string(ref_val.as_string());
+          }
+        }
+
+        // Skip if variable is in common set
+        if (common_vars.find(var) != common_vars.end()) {
+          continue;
+        }
+
+        // Create new assignment with shifted index
+        json::object new_assignment;
+        for (auto& [key, val] : obj) {
+          if (key == "index" && val.is_int64()) {
+            int old_idx = static_cast<int>(val.as_int64());
+            new_assignment[key] = old_idx + index_shift;
+          } else {
+            new_assignment[key] = val;
+          }
+        }
+
+        result.push_back(new_assignment);
+      }
+    }
+
+    return result;
+  }
+
+  // iiconcat(as1, as2): Inverse concatenate assignment lists
+  // - Indices of as1 are shifted backward to precede as2
+  // - Variables appearing in both lists are excluded from the result
+  json::array iiconcat(const json::array& as1, const json::array& as2) {
+    // Compute coin(as1, as2) - variables appearing in both
+    set<string> common_vars = coin(as1, as2);
+
+    // Get max index from as1 and min index from as2
+    int max_idx_as1 = get_max_index(as1);
+    int min_idx_as2 = get_min_index(as2);
+
+    // Calculate the shift for as1: indices should be shifted to make room for as2 after
+    // Shift is: i - max_idx_as1 - min_idx_as2 - 1
+    int shift_as1 = -max_idx_as1 - min_idx_as2 - 1;
+
+    json::array result;
+
+    // Add assignments from as1 with shifted indices, excluding common variables
+    for (const auto& assignment : as1) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        string var;
+
+        // Extract variable name
+        if (obj.contains("ref")) {
+          auto ref_val = obj.at("ref");
+          if (ref_val.is_string()) {
+            var = string(ref_val.as_string());
+          }
+        }
+
+        // Skip if variable is in common set
+        if (common_vars.find(var) != common_vars.end()) {
+          continue;
+        }
+
+        // Create new assignment with shifted index
+        json::object new_assignment;
+        for (auto& [key, val] : obj) {
+          if (key == "index" && val.is_int64()) {
+            int old_idx = static_cast<int>(val.as_int64());
+            new_assignment[key] = old_idx + shift_as1;
+          } else {
+            new_assignment[key] = val;
+          }
+        }
+
+        result.push_back(new_assignment);
+      }
+    }
+
+    // Add all assignments from as2
+    for (const auto& assignment : as2) {
+      result.push_back(assignment);
+    }
+
+    return result;
+  }
+
+  // apply_assignments(as, expr): Apply an assignment list as substitution to an expression
+  // This function applies the variable assignments from the assignment list to the expression
+  // Variables are substituted with their assigned values in order of their indices
+  json::value apply_assignments(const json::array& as, json::value expr) {
+    // Build a substitution map from the assignment list
+    // Sort assignments by index to apply them in the correct order
+    vector<pair<int, pair<string, json::value>>> sorted_assignments;
+
+    for (const auto& assignment : as) {
+      if (assignment.is_object()) {
+        auto obj = assignment.as_object();
+        string var;
+        json::value value;
+        int index = 0;
+
+        if (obj.contains("ref") && obj.at("ref").is_string()) {
+          var = string(obj.at("ref").as_string());
+        }
+        if (obj.contains("value")) {
+          value = obj.at("value");
+        }
+        if (obj.contains("index") && obj.at("index").is_int64()) {
+          index = static_cast<int>(obj.at("index").as_int64());
+        }
+
+        if (!var.empty()) {
+          sorted_assignments.push_back({index, {var, value}});
+        }
+      }
+    }
+
+    // Sort by index using a custom comparator
+    sort(sorted_assignments.begin(), sorted_assignments.end(),
+         [](const pair<int, pair<string, json::value>>& a,
+            const pair<int, pair<string, json::value>>& b) {
+           return a.first < b.first;
+         });
+
+    // Apply substitutions in order
+    json::value result = expr;
+    for (const auto& [idx, var_val] : sorted_assignments) {
+      const string& var = var_val.first;
+      const json::value& value = var_val.second;
+
+      // Recursively substitute the variable in the expression
+      // For now, simple substitution in json structures
+      result = substitute_in_expression(result, var, value);
+    }
+
+    return result;
+  }
+
+private:
+  // Helper function: Recursively substitute a variable in a JSON expression
+  json::value substitute_in_expression(const json::value& expr, const string& var, const json::value& value) {
+    if (expr.is_object()) {
+      json::object result;
+      auto obj = expr.as_object();
+
+      for (auto& [key, val] : obj) {
+        if (key == "ref" && val.is_string() && string(val.as_string()) == var) {
+          result[key] = value;
+        } else {
+          result[key] = substitute_in_expression(val, var, value);
+        }
+      }
+      return result;
+    } else if (expr.is_array()) {
+      json::array result;
+      auto arr = expr.as_array();
+      for (const auto& elem : arr) {
+        result.push_back(substitute_in_expression(elem, var, value));
+      }
+      return result;
+    } else {
+      return expr;
+    }
+  }
+
+public:
 
   json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
   {
-    rewriter r;
-    const data::data_expression e = r(e_in);
-    if (is_variable(e))
-    {
-      // check the variable doesn't need reading
-      // auto varName = static_cast<string>(atermpp::down_cast<data::variable>(e).name()).c_str();
-      auto varName = pp(atermpp::down_cast<data::variable>(e).name());
-      auto janiVar = getVariable(varName);
-      if(requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
-        throw jani_translation_error("This variable requires reading, can't be used in an expression before it's used in an action receiving a value.");
-      }
-      return json::value(janiVar);
-    }
-    else if (data::sort_pos::is_positive_constant(e) ||
-      data::sort_nat::is_natural_constant(e) ||
-      data::sort_int::is_integer_constant(e)) {
-      return stoi(pp(e));
-    }
-    else if (data::sort_bool::is_true_function_symbol(e)) {
-      return true;
-    }
-    else if (data::sort_bool::is_false_function_symbol(e)) {
-      return false;
-    }
-    else if (data::sort_bool::is_not_application(e))
-    {
-      const data::application& appl = atermpp::down_cast<data::application>(e);
-      return json::object{
-        {"op", reinterpret_cast<const char*>(u8"¬")},
-        {"exp", convert_data_expression(appl[0], topLevel=false)}
-      };
-    }
-    else if (is_greater_application(e)) // > is not supported within jani, and thus should be flipped
-    {
-      const data::application& appl = atermpp::down_cast<data::application>(e);
-      return json::object{
-        {"left", convert_data_expression(appl[1], topLevel=false)},
-        {"op", "<"},
-        {"right", convert_data_expression(appl[0], topLevel=false)}
-      };
-    }
-    else if (is_greater_equal_application(e)) // >= is not supported within jani, and thus should be flipped
-    {
-      const data::application& appl = atermpp::down_cast<data::application>(e);
-      return json::object{
-        {"left", convert_data_expression(appl[1], topLevel=false)},
-        {"op", reinterpret_cast<const char*>(u8"≤")},
-        {"right", convert_data_expression(appl[0], topLevel=false)}
-      };
-    }
-    else if (data::sort_bool::is_implies_application(e)) {
-      const data::application& appl = atermpp::down_cast<data::application>(e);
-      return json::object{
-        {"op", "ite"},
-        {"if", convert_data_expression(appl[0], topLevel=false)},
-        {"then", convert_data_expression(appl[1], topLevel=false)},
-        {"else", "true"}
-      };
-    }
-    else if (data::sort_real::is_floor_application(e) ||
-      data::sort_real::is_ceil_application(e))
-    {
-      const data::application& appl = atermpp::down_cast<data::application>(e);
-      return json::object{
-        {"op", pp(appl.head())},
-        {"exp", convert_data_expression(appl[0], topLevel=false)}
-      };
-    }
-    else if (data::is_application(e) && e.size() == 3) {
-      const data::application& appl = atermpp::down_cast<data::application>(e);
-      return json::object{
-        {"left", convert_data_expression(appl[0], topLevel=false)},
-        {"op", convert_operator_to_jani(appl.head())},
-        {"right", convert_data_expression(appl[1], topLevel=false)}
-      };
-    }
-    else
-    {
-      throw mcrl2::runtime_error("Jani only supports expressions true, false and numbers. "
-        "It does not support the main operator in the expression " + pp(e) + ".");
-    }
+    // rewriter r;
+    // const data::data_expression e = r(e_in);
+    // if (is_variable(e))
+    // {
+    //   // check the variable doesn't need reading
+    //   // auto varName = static_cast<string>(atermpp::down_cast<data::variable>(e).name()).c_str();
+    //   auto varName = pp(atermpp::down_cast<data::variable>(e).name());
+    //   auto janiVar = getVariable(varName);
+    //   if(requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
+    //     throw jani_translation_error("This variable requires reading, can't be used in an expression before it's used in an action receiving a value.");
+    //   }
+    //   return json::value(janiVar);
+    // }
+    // else if (data::sort_pos::is_positive_constant(e) ||
+    //   data::sort_nat::is_natural_constant(e) ||
+    //   data::sort_int::is_integer_constant(e)) {
+    //   return stoi(pp(e));
+    // }
+    // else if (data::sort_bool::is_true_function_symbol(e)) {
+    //   return true;
+    // }
+    // else if (data::sort_bool::is_false_function_symbol(e)) {
+    //   return false;
+    // }
+    // else if (data::sort_bool::is_not_application(e))
+    // {
+    //   const data::application& appl = atermpp::down_cast<data::application>(e);
+    //   return json::object{
+    //     {"op", reinterpret_cast<const char*>(u8"¬")},
+    //     {"exp", convert_data_expression(appl[0], topLevel=false)}
+    //   };
+    // }
+    // else if (is_greater_application(e)) // > is not supported within jani, and thus should be flipped
+    // {
+    //   const data::application& appl = atermpp::down_cast<data::application>(e);
+    //   return json::object{
+    //     {"left", convert_data_expression(appl[1], topLevel=false)},
+    //     {"op", "<"},
+    //     {"right", convert_data_expression(appl[0], topLevel=false)}
+    //   };
+    // }
+    // else if (is_greater_equal_application(e)) // >= is not supported within jani, and thus should be flipped
+    // {
+    //   const data::application& appl = atermpp::down_cast<data::application>(e);
+    //   return json::object{
+    //     {"left", convert_data_expression(appl[1], topLevel=false)},
+    //     {"op", reinterpret_cast<const char*>(u8"≤")},
+    //     {"right", convert_data_expression(appl[0], topLevel=false)}
+    //   };
+    // }
+    // else if (data::sort_bool::is_implies_application(e)) {
+    //   const data::application& appl = atermpp::down_cast<data::application>(e);
+    //   return json::object{
+    //     {"op", "ite"},
+    //     {"if", convert_data_expression(appl[0], topLevel=false)},
+    //     {"then", convert_data_expression(appl[1], topLevel=false)},
+    //     {"else", "true"}
+    //   };
+    // }
+    // else if (data::sort_real::is_floor_application(e) ||
+    //   data::sort_real::is_ceil_application(e))
+    // {
+    //   const data::application& appl = atermpp::down_cast<data::application>(e);
+    //   return json::object{
+    //     {"op", pp(appl.head())},
+    //     {"exp", convert_data_expression(appl[0], topLevel=false)}
+    //   };
+    // }
+    // else if (data::is_application(e) && e.size() == 3) {
+    //   const data::application& appl = atermpp::down_cast<data::application>(e);
+    //   return json::object{
+    //     {"left", convert_data_expression(appl[0], topLevel=false)},
+    //     {"op", convert_operator_to_jani(appl.head())},
+    //     {"right", convert_data_expression(appl[1], topLevel=false)}
+    //   };
+    // }
+    // else
+    // {
+    //   throw mcrl2::runtime_error("Jani only supports expressions true, false and numbers. "
+    //     "It does not support the main operator in the expression " + pp(e) + ".");
+    // }
   }
 
 
@@ -585,92 +735,6 @@ public:
     }
   }
 
-  // these keep track of the location associated to a subprocess expression and vice-versa
-  using symbolic_process_expression = pair<process_expression, map<mcrl2_var_name, jani_var_name>>;
-  map<symbolic_process_expression, string>subProcessStateMap;
-  map<string, symbolic_process_expression> locationSubProcessMap;
-
-  // used to set locations for sums, since their location is the location for its already
-  // translated body
-  void assignLocationForExpression(symbolic_process_expression expr, string locationName) {
-      subProcessStateMap.insert({expr, locationName});
-      locationSubProcessMap.insert({locationName, expr});
-  }
-
-  pair<string, bool> ensureLocationForExpression(symbolic_process_expression expr) {
-    // user code must have followed the equations and call this function
-    // only if it found the actual behavior
-
-    if (subProcessStateMap.count(expr) == 0) {
-      auto loc = newState();
-      string name = loc["name"].as_string().c_str();
-      addStateToAutomaton(loc);
-      subProcessStateMap.insert({expr, name});
-      locationSubProcessMap.insert({name, expr});
-      return make_pair(name, true);
-    } else {
-      return make_pair(subProcessStateMap.at(expr), false);
-    }
-  }
-
-  // Inserts pending assignments to an edge, after the existing assignments (if any).
-  void insertPendingAssignmentsAfter(json::object& edge, pending_assignments pendingAssignments) {
-
-    json::array newAssignments;
-
-    // By default, we are inserting assignments starting on index 2
-    int baseIndex = 2;
-
-    bool edgeHasAssignments = edge.at("destinations").at(0).as_object().contains("assignments");
-
-    // increase the base index one further than the maximum index in existing assignments
-    if (edgeHasAssignments) {
-      auto existingAssignments = edge.at("destinations").at(0).as_object().at("assignments").as_array();
-      for (const auto& assignment : existingAssignments) {
-        int currentIndex;
-        if (assignment.as_object().contains("index")) {
-          currentIndex = assignment.as_object().at("index").as_int64();
-        } else {
-          currentIndex = 0;
-        }
-        if (currentIndex >= baseIndex) {
-          baseIndex = currentIndex + 1;
-        }
-
-        newAssignments.push_back(assignment);
-      }
-    }
-
-    // add pending assignments with increasing index starting from baseIndex
-    for (auto& atomicAssignmentSet : pendingAssignments) {
-      for (auto& assignment : atomicAssignmentSet) {
-        assignment.as_object()["index"] = baseIndex;
-        newAssignments.push_back(assignment);
-        baseIndex++;
-      }
-    }
-
-    auto& destination =  edge.at("destinations").at(0).as_object();
-    destination["assignments"] = newAssignments;
-  }
-
-  // Inserts pending assignments to an edge, before the existing assignments (if any).
-  void insertPendingAssignmentsBefore(json::value& edge, pending_assignments pendingAssignments) {
-    // By default, we are inserting assignments starting on index 2
-    int baseIndex = -1;
-
-    // decrease the base index one further than the minimum index in existing assignments
-    if (edge.as_object().contains("assignments")) {
-      auto existingAssignments = edge.as_object()["assignments"].as_array();
-      for (const auto& assignment : existingAssignments) {
-        int currentIndex = assignment.as_object().at("index").as_int64();
-        if (currentIndex <= baseIndex) {
-          baseIndex = currentIndex - 1;
-        }
-      }
-    }
-  }
-
   void strengthenGuardOfEdge(json::object& edge, json::value guardExpression) {
     if (edge.contains("guard")) {
       auto newGuardExpression = json::object{
@@ -701,355 +765,17 @@ public:
   }
 
 
-  pair<string, pending_assignments> translateProcessExpression(const process_expression& expr) {
-
-    auto fv = process::find_free_variables(expr);
-
-    map<mcrl2_var_name, jani_var_name> varMap;
-
-    for (const auto& var : fv) {
-      varMap[var.name()] = getVariable(pp(var.name()));
-    }
-
-    symbolic_process_expression symExpr{expr, varMap};
-
-    for (const auto& var : fv) {
-      getVariable(pp(var.name()));
-    }
-
-    // just for debugging
-    string exprs =  pp(expr);
-
-
-    if(is_action(expr)) {
-
-      // TODO:
-      //   - check that quantified variables used in reading actions are *exactly* the same sort/type
-      //     although that might seem overly restrictive, mCRL2 itself doesn't handle those type mismatches at all
-
-      // Ensure a location exists for this action
-      auto [locationName, created] = ensureLocationForExpression(symExpr);
-      if (!created) {
-        return {locationName, {}};
-      }
-
-      auto act = down_cast<action>(expr);
-      string actionName = pp(act.label());
-
-      // Ensure terminating location is in the graph
-      ensureTermLocation();
-
-      bool actionReads = false;
-      vector<jani_var_name> varsToUnmark;
-      for (const auto& arg : act.arguments()) {
-        for (const auto& var : data::find_free_variables(arg)) {
-          auto varName = static_cast<string>(var.name());
-          auto janiVar = getVariable(varName);
-          if (requiresReading(janiVar)) {
-            actionReads = true; 
-            varsToUnmark.push_back(janiVar);
-            readingActions.insert(actionName);
-          }
-        }
-      }
-
-      json::array assignments({});
-      if (actionReads) {
-        assignments = compute_read_assignments(act);
-      }
-
-
-      for (auto& janiVar : varsToUnmark) {
-        unmarkForReading(janiVar);
-      }
-
-
-      if (!actionReads) {
-        // this is a writing action, so track its assignments
-        // so as to assign to transient variables later
-
-        uint i = 0;
-        for (auto& arg : act.arguments()) {
-          assignments.push_back(
-            json::object({
-              {"ref", to_string(i)},
-              {"value", convert_data_expression(arg)}
-            })
-          );
-          i++;
-        }
-      }
-
-
-      // Ensure there's a transition from this location to the terminating location
-      if (created) {
-        auto edge = makeEdge(locationName, TERMINATION_LOCATION_NAME, actionName, assignments);
-
-        addEdgeToAutomaton(edge);
-      }
-
-      return {locationName, {}};
-
-    } else if(is_seq(expr)) {
-
-      auto sequence = down_cast<seq>(expr);
-
-      auto [locationName, created] = ensureLocationForExpression(symExpr); 
-
-      if (!created) {
-        return {locationName, {}};
-      }
-
-      auto p = sequence.left(); 
-      auto q = sequence.right(); 
-
-      // left part shouldn't have pending assignments, as we don't allow for process instances to occur
-      auto [leftLocation, _] = translateProcessExpression(p);
-      auto [rightLocation, pendingAssignments] = translateProcessExpression(q);
-
-
-      // for every outgoing transition from the left part:
-      //   if it's to the terminating location, copy it but aiming from this location to the right part's location
-      //   if it's not, then copy it but aiming from this location to a new expression's we'll have to recurse on first.
-      //   this expression is `[the expression corresponding to the aimed location] . [right part]`
-
-      // TODO: handle pending assignments while copying edges.
-      vector<json::object> newEdges;
-      for (auto& edge : jani_automaton["edges"].as_array()) {
-        auto& edgeObj = edge.as_object();
-        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-        auto source = edgeObj["location"].as_string().c_str();
-        if (source == leftLocation) {
-          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
-          newEdge["location"] = locationName;
-          if (edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str() == TERMINATION_LOCATION_NAME) {
-            newEdge["destinations"].as_array()[0].as_object()["location"] = rightLocation;
-            insertPendingAssignmentsAfter(newEdge, pendingAssignments);
-            newEdges.push_back(newEdge);
-          } else {
-            auto newExpr = seq(locationSubProcessMap.at(target).first, q);
-
-            // new expression is a sequence, we know it won't have pending assignments
-            auto [newLocation, _] = translateProcessExpression(newExpr);
-            newEdge["destinations"].as_array()[0].as_object()["location"] = newLocation;
-            newEdges.push_back(newEdge);
-          }
-        }
-      }
-
-      for (auto& newEdge : newEdges) {
-        addEdgeToAutomaton(newEdge);
-      }
-
-      return {locationName, {}};
-    } else if(is_choice(expr)) {
-
-      // TODO:
-      //   - include pending assignments for subexpressions in the negative indices of their first transitions
-      //   - rewrite any guards in the first transitions according to this assignments
-
-      // - Ensure a location exists for this choice
-      auto [locationName, created] = ensureLocationForExpression(symExpr);
-      if (!created) {
-        return {locationName, {}};
-      }
-      auto choiceExpr = down_cast<choice>(expr);
-      auto p = choiceExpr.left();
-      auto q = choiceExpr.right();
-      auto [leftLocation, leftPendingAssignments] = translateProcessExpression(p);
-      auto [rightLocation, rightPendingAssignments] = translateProcessExpression(q);
-
-      // - For each outgoing transition of the left side, copy it but going out of this location
-      for (auto& edge : jani_automaton["edges"].as_array()) {
-        auto& edgeObj = edge.as_object();
-        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-        auto source = edgeObj["location"].as_string().c_str();
-
-        if (source == leftLocation) {
-          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
-          newEdge["location"] = locationName;
-          addEdgeToAutomaton(newEdge);
-        }
-
-
-        if (source == rightLocation) {
-          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
-          newEdge["location"] = locationName;
-          addEdgeToAutomaton(newEdge);
-        }
-      }
-
-      return {locationName, {}};
-    } else if(is_process_instance(expr)) {
-
-      auto instance = down_cast<process_instance>(expr);
-
-      // set current process name
-      currentProcessName = pp(instance.identifier());
-
-      auto eq = lookup_process_equation(instance.identifier());
-      auto processExpr = eq.expression();
-
-      vector<jani_var_name> lhs;
-      vector<json::value> rhs;
-      json::array pendingAssignments;
-
-      for (const auto& arg : instance.actual_parameters()) {
-        rhs.push_back(convert_data_expression(arg));
-      }
-
-      // register process params in symbol table
-      // and get lhs for the instance's pending assignments
-      enterProcessScope();
-      variable_list params = eq.formal_parameters();
-      for (auto& param : params) {
-        lhs.push_back(registerVar(param, pp(eq.identifier()), true));
-      }
-
-      assert(lhs.size() == rhs.size());
-      for (size_t i = 0; i < lhs.size(); ++i) {
-        pendingAssignments.push_back(
-          json::object{
-            {"ref", lhs[i]},
-            {"value", rhs[i]},
-            {"index", 0}
-          });
-      }
-
-      auto [innerProcessLocation, innerPendingAssignments] = translateProcessExpression(processExpr);
-
-      // combine all assignments
-      innerPendingAssignments.push_front(pendingAssignments);
-
-      leaveScope();
-
-      return {innerProcessLocation, innerPendingAssignments};
-      
-    } else if(is_sum(expr)) {
-      // NOTE: - if we do create a location for this sum, i.e it's the first time we see it,
-      //       this location will be overwritten. 
-      //       - the snippet below will, upon seeing this sum again, return the location for the body, 
-      //       since that's the location we set for this sum right after translating the body.
-      auto [locationName, created] = ensureLocationForExpression(symExpr);
-      if (!created) {
-        return {locationName, {}};
-      }
-
-      auto sumExpr = down_cast<sum>(expr);
-
-      enterScope();
-      for (auto& var : sumExpr.variables()) {
-        registerVar(var, currentProcessName);
-      }
-
-      auto [innerProcessLocation, pendingAssignments] = translateProcessExpression(sumExpr.operand());
-
-      // copy all outgoing edges from the inner process location to this location, as sums don't have their own behavior, they just introduce new variables
-      for (auto& edge : jani_automaton["edges"].as_array()) {
-        auto& edgeObj = edge.as_object();
-        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-        auto source = edgeObj["location"].as_string().c_str();
-        if (source == innerProcessLocation) {
-          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
-          newEdge["location"] = locationName;
-          addEdgeToAutomaton(newEdge);
-        }
-      }
-
-      leaveScope();
-
-      return {locationName, pendingAssignments};
-    } else if(is_if_then(expr)) {
-      auto [locationName, created] = ensureLocationForExpression(symExpr);
-      if (!created) {
-        return {locationName, {}};
-      }
-      auto ifThenExpr = down_cast<if_then>(expr);
-      // for each outgoing edge from the inner process location, copy it and add aguard with the condition
-      auto [innerLocation, pendingAssignments] = translateProcessExpression(ifThenExpr.then_case());
-
-      // TODO: handle pending assignments while copying edges
-      for (auto& edge : jani_automaton["edges"].as_array()) {
-        auto& edgeObj = edge.as_object();
-        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-        auto source = edgeObj["location"].as_string().c_str();
-
-        if (source == innerLocation) {
-          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
-          newEdge["location"] = locationName;
-          json::value guardExpression = convert_data_expression(ifThenExpr.condition());
-          strengthenGuardOfEdge(newEdge, guardExpression);
-          addEdgeToAutomaton(newEdge);
-        }
-      }
-
-      return {locationName, {}};
-    } else if(is_if_then_else(expr)) {
-      auto [locationName, created] = ensureLocationForExpression(symExpr);
-      if (!created) {
-        return {locationName, {}};
-      }
-      auto ifThenExpr = down_cast<if_then_else>(expr);
-      // for each outgoing edge from the inner process location, copy it and add aguard with the condition
-      auto [thenInnerLocation, thenPendingAssignments] = translateProcessExpression(ifThenExpr.then_case());
-
-      // TODO: handle pending assignments while copying edges
-      for (auto& edge : jani_automaton["edges"].as_array()) {
-        auto& edgeObj = edge.as_object();
-        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-        auto source = edgeObj["location"].as_string().c_str();
-
-        if (source == thenInnerLocation) {
-          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
-          newEdge["location"] = locationName;
-          json::value guardExpression = convert_data_expression(ifThenExpr.condition());
-          strengthenGuardOfEdge(newEdge, guardExpression);
-          addEdgeToAutomaton(newEdge);
-        }
-      }
-
-      // for each outgoing edge from the inner process location, copy it and add aguard with the condition
-      auto [elseInnerLocation, elsePendingAssignments] = translateProcessExpression(ifThenExpr.else_case());
-
-      // TODO: handle pending assignments while copying edges
-      for (auto& edge : jani_automaton["edges"].as_array()) {
-        auto& edgeObj = edge.as_object();
-        auto target = edgeObj["destinations"].as_array()[0].as_object()["location"].as_string().c_str();
-        auto source = edgeObj["location"].as_string().c_str();
-
-        if (source == elseInnerLocation) {
-          json::object newEdge = edgeObj; // copy edge, we'll modify and add it back as a new edge
-          newEdge["location"] = locationName;
-          json::value guardExpression = convert_data_expression(ifThenExpr.condition());
-          strengthenGuardOfEdge(newEdge, negateGuardExpression(guardExpression));
-          addEdgeToAutomaton(newEdge);
-        }
-      }
-
-      return {locationName, {}};
-    }  else {
-      throw jani_translation_error("Unsupported process expression encountered during translation.");
-    }
-  }
-
   public:
-    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, string automatonName, incomplete_edge_assignments incompleteEdgeAssignments)
-    : initial_process_call(initial_process_call), incompleteEdgeAssignments(incompleteEdgeAssignments)
+    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, string automatonName)
+    : initial_process_call(initial_process_call)
     {
       this->spec = spec;
-
-
-      readingActions = readingActionSet({});
 
       jani_automaton = {
         {"name", automatonName},
         {"locations", json::array()},
         {"edges", json::array()}
       };
-    }
-
-    readingActionSet getReadingActions() const {
-      return readingActions;
     }
 
     void removeUnreachableLocationsAndEdges(string initialLocation) {
@@ -1105,17 +831,139 @@ public:
       }
     }
 
+    using transition = pair<json::object /* edge */, abstract_location>;
+
+    // Maps an abstract location to its (deterministic) JANI location name.
+    // The exploration BFS dedups on abstract_location value equality (structural,
+    // via aterms), so the name only needs to be a deterministic function of the
+    // location.
+    string locationName(const abstract_location& loc) {
+      if (std::holds_alternative<termination_t>(loc)) {
+        return TERMINATION_LOCATION_NAME;
+      }
+      return pp(std::get<process_expression>(loc));
+    }
+
+    // Re-sources every edge of `transitions` to `newSource` (in place) and returns
+    // them. Composite operators use this to attribute a sub-expression's
+    // transitions to the enclosing location.
+    list<transition> reSource(list<transition> transitions, const string& newSource) {
+      for (auto& [edge, target] : transitions) {
+        edge["location"] = newSource;
+      }
+      return transitions;
+    }
+
+    // Computes the outgoing transitions of a location. This function is PURE: it
+    // does not touch the automaton (no locations/edges are committed here), which
+    // lets it recurse through composite operators to inspect sub-expressions
+    // without materialising states we only needed to look at. Committing happens
+    // in translateProcessExpression.
+    //
+    // Returns a list of (edge, location) pairs, where `edge` is the JANI edge that
+    // leads to `location`. Every returned edge has source = locationName(loc).
+    //
+    // successors is the SOS transition relation (→); a termination_t in the result
+    // encodes the successful-termination predicate ✓ (the JANI `termination` sink).
+    list<transition> successors(const abstract_location& loc) {
+      list<transition> result;
+
+      // termination is a sink: no outgoing transitions.
+      if (std::holds_alternative<termination_t>(loc)) {
+        return result;
+      }
+
+      const process_expression& expr = std::get<process_expression>(loc);
+
+      // (Act)  a ──a──▶ ✓
+      if (is_action(expr)) {
+        const process::action& act = atermpp::down_cast<process::action>(expr);
+        // Use the action label so the edge references an action declared by
+        // translateActions (which also names actions with pp(action_label)).
+        // Data arguments on the action are out of scope for now.
+        json::object edge = makeEdge(locationName(loc), TERMINATION_LOCATION_NAME, pp(act.label()));
+        result.push_back({edge, termination_t{}});
+      }
+      // (Delta)  δ : deadlock, no rules, no transitions.
+      else if (is_delta(expr)) {
+        // no successors
+      }
+      // (Choice-L) p ──a──▶ p' ⟹ p+q ──a──▶ p'
+      // (Choice-R) q ──a──▶ q' ⟹ p+q ──a──▶ q'
+      else if (is_choice(expr)) {
+        const process::choice& choiceExpr = atermpp::down_cast<process::choice>(expr);
+        result.splice(result.end(), reSource(successors(choiceExpr.left()), locationName(loc)));
+        result.splice(result.end(), reSource(successors(choiceExpr.right()), locationName(loc)));
+      }
+      // (Seq-1) p ──a──▶ p' ⟹ p·q ──a──▶ p'·q
+      // (Seq-2) p ──a──▶ ✓  ⟹ p·q ──a──▶ q
+      else if (is_seq(expr)) {
+        const seq& sequence = atermpp::down_cast<seq>(expr);
+        const process_expression& right = sequence.right();
+
+        for (auto& [edge, target] : successors(sequence.left())) {
+          abstract_location newTarget = std::holds_alternative<termination_t>(target)
+            ? abstract_location(right)                                                      // (Seq-2)
+            : abstract_location(process_expression(seq(std::get<process_expression>(target), right))); // (Seq-1)
+
+          edge["location"] = locationName(loc);
+          edge["destinations"].as_array()[0].as_object()["location"] = locationName(newTarget);
+          result.push_back({edge, newTarget});
+        }
+      }
+      // (Inst)  body(P) ──a──▶ p' ⟹ P ──a──▶ p'   where P = body(P)
+      else if (is_process_instance(expr)) {
+        const process_instance& procInst = atermpp::down_cast<process_instance>(expr);
+        process_equation eqn = lookup_process_equation(procInst.identifier());
+        result = reSource(successors(eqn.expression()), locationName(loc));
+      }
+      else {
+        throw jani_translation_error(
+          "Expression " + pp(expr) + " not supported as a location in the automaton.");
+      }
+
+      return result;
+    }
+
+    // Explores the locations reachable from `initial` and commits the
+    // corresponding JANI locations and edges to the automaton. successors is pure,
+    // so this is the only place where the automaton is mutated. Termination and
+    // delta locations fall out naturally as discovered locations with no outgoing
+    // edges. Returns the name of the initial location.
+    string translateProcessExpression(const abstract_location& initial) {
+      list<abstract_location> work_queue = {initial};
+      set<abstract_location> discovered = {initial};
+
+      addStateToAutomaton(json::object{{"name", locationName(initial)}});
+
+      while (!work_queue.empty()) {
+        abstract_location s = work_queue.front();
+        work_queue.pop_front();
+
+        for (auto& [edge, target] : successors(s)) {
+          addEdgeToAutomaton(edge);
+          if (!discovered.contains(target)) {
+            discovered.insert(target);
+            addStateToAutomaton(json::object{{"name", locationName(target)}});
+            work_queue.push_back(target);
+          }
+        }
+      }
+
+      return locationName(initial);
+    }
+
     json::object translate(){
 
-      auto [initialLocation, pendingAssignments] = translateProcessExpression(initial_process_call);
+      auto initialLocation = translateProcessExpression(initial_process_call);
 
       jani_automaton["initial-locations"] = json::array({initialLocation});
 
-      jani_automaton["variables"] = localVariables;
-
       // TODO: use the pending assignments to set initial values for local variables
 
-      removeUnreachableLocationsAndEdges(initialLocation);
+      // No unreachable-cleanup pass needed: successors is pure and
+      // translateProcessExpression only commits locations/edges reachable from the
+      // initial location.
 
       return jani_automaton;
     };
@@ -1151,11 +999,12 @@ class syncs_matrix {
   }
 
 
+
   // checks that all sync vectors include
   // exactly one writing action.
   // 0 would result in reading actions getting just the initial value
   // more than one would result in writing multiple values to the same channel
-  void checkSyncs(readingActionSet readingActions) {
+  void checkSyncs(actionSet readingActions) {
     for (auto& row : matrix) {
       
       uint writingActionCount = 0;
@@ -1413,8 +1262,8 @@ class syncs_matrix {
 class jani_translator
 {
   private:
-  incomplete_edge_assignments incompleteEdgeAssignments;
-  readingActionSet readingActions;
+  actionSet readingActions;
+  actionSet writingActions;
   map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
@@ -1544,10 +1393,8 @@ class jani_translator
       automatonCounters[procInst.identifier()]++;
     }
 
-    pcrl_to_automaton_translator translator(spec, procInst, automatonName, incompleteEdgeAssignments);
+    pcrl_to_automaton_translator translator(spec, procInst, automatonName);
     auto automaton = translator.translate();
-    auto automatonReadingActions = translator.getReadingActions();
-    readingActions.insert(automatonReadingActions.begin(), automatonReadingActions.end());
     return automaton;
   }
 
@@ -1607,7 +1454,6 @@ public:
   // constructor
   jani_translator(const process::process_specification& specification)
     : spec(specification) {
-      readingActions = readingActionSet();
     }
 
   
@@ -1765,8 +1611,6 @@ public:
   having this two data structures read (the edge tracking one, and the write -> reads map), we can
   add the remaining assignments to the edges for the writing actions.
   */
-
-
 };
 
 class mcrl22jani_tool : public rewriter_tool<input_output_tool>
