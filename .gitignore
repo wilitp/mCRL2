@@ -69,3 +69,4 @@ Thumbs.db # Windows
 *.gz
 
 *.cmake
+tools/developer/mcrl22jani/latex

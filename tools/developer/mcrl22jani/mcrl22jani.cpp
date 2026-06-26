@@ -17,6 +17,9 @@
 #include "mcrl2/data/real_utilities.h"
 #include "mcrl2/data/rewriter_tool.h"
 #include <boost/json/src.hpp>
+#include "mcrl2/data/find.h"
+#include "mcrl2/data/replace.h"
+#include "mcrl2/data/substitutions/mutable_map_substitution.h"
 #include "mcrl2/data/substitutions/maintain_variables_in_rhs.h"
 #include "mcrl2/lps/io.h"
 #include "mcrl2/lps/linearise.h"
@@ -43,7 +46,9 @@
 // Process libraries.
 #include "mcrl2/process/alphabet_reduce.h"
 #include "mcrl2/process/balance_nesting_depth.h"
+#include "mcrl2/process/find.h"
 #include "mcrl2/process/process_expression.h"
+#include "mcrl2/process/replace.h"
 
 using mcrl2::data::tools::rewriter_tool;
 using mcrl2::utilities::tools::input_output_tool;
@@ -153,7 +158,34 @@ struct termination_t {
   auto operator<=>(const termination_t&) const = default;
 };
 
-using abstract_location = std::variant<process_expression, termination_t>;
+// β (symbol map): binds each free (equation-parameter) variable of a location's
+// process expression to the JANI variable name that represents it. It is part of
+// a location's identity so that the same body term reused by different equations
+// (e.g. a(n) in both P and Q) yields distinct locations with distinct JANI
+// variables (P_n vs Q_n).
+using symbol_map = std::map<data::variable, std::string>;
+
+// env (substitution environment): the pending substitution [Asgn] of the thesis
+// location triple Loc = ProcExp × (mCRL2Var → JANIVar) × [Asgn]. Maps free data
+// variables to the expressions they stand for. At the data-without-communication
+// stage it is empty in every reachable location (process-instance parameter passing
+// is materialised onto edges, not kept here); it is carried in identity so that the
+// Recursión/Fijación location p[d:=t] is representable and dedups correctly, and so
+// dist-introduced substitutions distinguish locations once that operator lands.
+using subst_env = std::map<data::variable, data::data_expression>;
+
+// A non-terminating location: a process expression together with the symbol map
+// (β) binding its free variables and the pending substitution environment (env).
+// Identity (and BFS dedup) is structural over (expr, beta, env).
+struct process_location {
+  process_expression expr;
+  symbol_map beta;
+  subst_env env;
+  auto operator<=>(const process_location&) const = default;
+  bool operator==(const process_location&) const = default;
+};
+
+using abstract_location = std::variant<process_location, termination_t>;
 
 class pcrl_to_automaton_translator{
 private:
@@ -168,6 +200,11 @@ public:
     const process_instance& initial_process_call;
     uint stateCounter = 0;
     json::object deltaLocation;
+
+    // JANI variables discovered while exploring (jani name -> mCRL2 sort), built
+    // from the symbol maps of the visited locations. Keyed by string so iteration
+    // order is deterministic (never iterate aterm-keyed containers for output).
+    std::map<std::string, data::sort_expression> jani_variable_sorts;
 
     const string DELTA_LOCATION_NAME = "delta_state";
     const string TERMINATION_LOCATION_NAME = "termination";
@@ -490,6 +527,32 @@ public:
     return result;
   }
 
+  // Shifts every assignment index by a constant so the minimum becomes 0, preserving
+  // the relative order and the equal-index (simultaneous) groups. ++_* (iiconcat) can
+  // produce negative indices; JANI assignment indices are emitted non-negative.
+  json::array normalizeAssignmentIndices(const json::array& as) {
+    if (as.empty()) {
+      return as;
+    }
+    int min_idx = get_min_index(as);
+    if (min_idx == 0) {
+      return as;
+    }
+    json::array result;
+    for (const auto& assignment : as) {
+      if (assignment.is_object()) {
+        json::object obj = assignment.as_object();
+        if (obj.contains("index") && obj.at("index").is_int64()) {
+          obj["index"] = static_cast<int>(obj.at("index").as_int64()) - min_idx;
+        }
+        result.push_back(obj);
+      } else {
+        result.push_back(assignment);
+      }
+    }
+    return result;
+  }
+
   // apply_assignments(as, expr): Apply an assignment list as substitution to an expression
   // This function applies the variable assignments from the assignment list to the expression
   // Variables are substituted with their assigned values in order of their indices
@@ -571,89 +634,113 @@ private:
 
 public:
 
-  json::value convert_data_expression(const data::data_expression& e_in, bool varsForReadingAllowed = false, bool topLevel = true)
+  // Converts an mCRL2 data expression to a JANI expression (JSON), resolving free
+  // variables through the symbol map β. JANI lacks > and >=, so those are flipped
+  // to < and ≤. Data on actions and the reading/writing machinery are out of scope
+  // here. Unsupported sorts/operators raise jani_translation_error.
+  json::value convert_data_expression(const data::data_expression& e, const symbol_map& beta)
   {
-    // rewriter r;
-    // const data::data_expression e = r(e_in);
-    // if (is_variable(e))
-    // {
-    //   // check the variable doesn't need reading
-    //   // auto varName = static_cast<string>(atermpp::down_cast<data::variable>(e).name()).c_str();
-    //   auto varName = pp(atermpp::down_cast<data::variable>(e).name());
-    //   auto janiVar = getVariable(varName);
-    //   if(requiresReading(janiVar) && (!topLevel || !varsForReadingAllowed)) {
-    //     throw jani_translation_error("This variable requires reading, can't be used in an expression before it's used in an action receiving a value.");
-    //   }
-    //   return json::value(janiVar);
-    // }
-    // else if (data::sort_pos::is_positive_constant(e) ||
-    //   data::sort_nat::is_natural_constant(e) ||
-    //   data::sort_int::is_integer_constant(e)) {
-    //   return stoi(pp(e));
-    // }
-    // else if (data::sort_bool::is_true_function_symbol(e)) {
-    //   return true;
-    // }
-    // else if (data::sort_bool::is_false_function_symbol(e)) {
-    //   return false;
-    // }
-    // else if (data::sort_bool::is_not_application(e))
-    // {
-    //   const data::application& appl = atermpp::down_cast<data::application>(e);
-    //   return json::object{
-    //     {"op", reinterpret_cast<const char*>(u8"¬")},
-    //     {"exp", convert_data_expression(appl[0], topLevel=false)}
-    //   };
-    // }
-    // else if (is_greater_application(e)) // > is not supported within jani, and thus should be flipped
-    // {
-    //   const data::application& appl = atermpp::down_cast<data::application>(e);
-    //   return json::object{
-    //     {"left", convert_data_expression(appl[1], topLevel=false)},
-    //     {"op", "<"},
-    //     {"right", convert_data_expression(appl[0], topLevel=false)}
-    //   };
-    // }
-    // else if (is_greater_equal_application(e)) // >= is not supported within jani, and thus should be flipped
-    // {
-    //   const data::application& appl = atermpp::down_cast<data::application>(e);
-    //   return json::object{
-    //     {"left", convert_data_expression(appl[1], topLevel=false)},
-    //     {"op", reinterpret_cast<const char*>(u8"≤")},
-    //     {"right", convert_data_expression(appl[0], topLevel=false)}
-    //   };
-    // }
-    // else if (data::sort_bool::is_implies_application(e)) {
-    //   const data::application& appl = atermpp::down_cast<data::application>(e);
-    //   return json::object{
-    //     {"op", "ite"},
-    //     {"if", convert_data_expression(appl[0], topLevel=false)},
-    //     {"then", convert_data_expression(appl[1], topLevel=false)},
-    //     {"else", "true"}
-    //   };
-    // }
-    // else if (data::sort_real::is_floor_application(e) ||
-    //   data::sort_real::is_ceil_application(e))
-    // {
-    //   const data::application& appl = atermpp::down_cast<data::application>(e);
-    //   return json::object{
-    //     {"op", pp(appl.head())},
-    //     {"exp", convert_data_expression(appl[0], topLevel=false)}
-    //   };
-    // }
-    // else if (data::is_application(e) && e.size() == 3) {
-    //   const data::application& appl = atermpp::down_cast<data::application>(e);
-    //   return json::object{
-    //     {"left", convert_data_expression(appl[0], topLevel=false)},
-    //     {"op", convert_operator_to_jani(appl.head())},
-    //     {"right", convert_data_expression(appl[1], topLevel=false)}
-    //   };
-    // }
-    // else
-    // {
-    //   throw mcrl2::runtime_error("Jani only supports expressions true, false and numbers. "
-    //     "It does not support the main operator in the expression " + pp(e) + ".");
-    // }
+    if (is_variable(e))
+    {
+      const data::variable& v = atermpp::down_cast<data::variable>(e);
+      auto it = beta.find(v);
+      if (it == beta.end())
+      {
+        throw jani_translation_error("Free variable " + pp(v) + " has no JANI binding "
+          "(not an equation parameter in scope).");
+      }
+      return json::value(it->second);
+    }
+    else if (data::sort_bool::is_true_function_symbol(e))
+    {
+      return true;
+    }
+    else if (data::sort_bool::is_false_function_symbol(e))
+    {
+      return false;
+    }
+    else if (data::sort_pos::is_positive_constant(e) ||
+             data::sort_nat::is_natural_constant(e) ||
+             data::sort_int::is_integer_constant(e))
+    {
+      return std::stoll(pp(e));
+    }
+    else if (data::sort_bool::is_not_application(e))
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return json::object{
+        {"op", reinterpret_cast<const char*>(u8"¬")},
+        {"exp", convert_data_expression(appl[0], beta)}
+      };
+    }
+    else if (is_greater_application(e)) // > is unsupported in JANI; flip to <
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return json::object{
+        {"left", convert_data_expression(appl[1], beta)},
+        {"op", "<"},
+        {"right", convert_data_expression(appl[0], beta)}
+      };
+    }
+    else if (is_greater_equal_application(e)) // >= is unsupported in JANI; flip to <=
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return json::object{
+        {"left", convert_data_expression(appl[1], beta)},
+        {"op", reinterpret_cast<const char*>(u8"≤")},
+        {"right", convert_data_expression(appl[0], beta)}
+      };
+    }
+    else if (data::sort_bool::is_implies_application(e))
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+      return json::object{
+        {"op", "ite"},
+        {"if", convert_data_expression(appl[0], beta)},
+        {"then", convert_data_expression(appl[1], beta)},
+        {"else", true}
+      };
+    }
+    else if (data::is_application(e))
+    {
+      const data::application& appl = atermpp::down_cast<data::application>(e);
+
+      // Identity coercions between numeric sorts: JANI has a single numeric tower,
+      // so e.g. Int2Nat(x) is just x.
+      static const std::set<std::string> coercions = {
+        "Int2Nat", "Nat2Int", "Pos2Nat", "Nat2Pos", "Int2Pos", "Pos2Int",
+        "Int2Real", "Nat2Real", "Pos2Real", "Real2Int"
+      };
+      if (appl.size() == 1 && coercions.contains(pp(appl.head())))
+      {
+        return convert_data_expression(appl[0], beta);
+      }
+      // Unary floor/ceil pass through with their operator name.
+      if (appl.size() == 1 &&
+          (data::sort_real::is_floor_application(e) || data::sort_real::is_ceil_application(e)))
+      {
+        return json::object{
+          {"op", pp(appl.head())},
+          {"exp", convert_data_expression(appl[0], beta)}
+        };
+      }
+      // Binary operators: left <op> right.
+      if (appl.size() == 2)
+      {
+        return json::object{
+          {"left", convert_data_expression(appl[0], beta)},
+          {"op", convert_operator_to_jani(appl.head())},
+          {"right", convert_data_expression(appl[1], beta)}
+        };
+      }
+      throw jani_translation_error("Unsupported data expression (arity " +
+        std::to_string(appl.size()) + "): " + pp(e) + ".");
+    }
+    else
+    {
+      throw jani_translation_error("Jani does not support the main operator in the "
+        "expression " + pp(e) + ".");
+    }
   }
 
 
@@ -754,7 +841,7 @@ public:
 
   // Negates a guard expression
   json::object negateGuardExpression(json::value guardExpression) {
-    if (guardExpression.as_object().contains("op") && guardExpression.at("op").as_string().c_str() == "¬") {
+    if (guardExpression.is_object() && guardExpression.as_object().contains("op") && guardExpression.at("op").as_string().c_str() == "¬") {
       return guardExpression.at("exp").as_object();
     } else {
       return json::object{
@@ -833,15 +920,69 @@ public:
 
     using transition = pair<json::object /* edge */, abstract_location>;
 
-    // Maps an abstract location to its (deterministic) JANI location name.
-    // The exploration BFS dedups on abstract_location value equality (structural,
-    // via aterms), so the name only needs to be a deterministic function of the
-    // location.
+    // Wraps a process expression with its symbol map (β) and substitution
+    // environment (env) into a location. β and env are restricted to the *free*
+    // variables of `e` (thesis: "β binds its free variables"): this canonicalises
+    // identity so that two paths reaching the same sub-term through different outer
+    // scopes — which may carry unused bindings merged in by e.g. seqTarget — dedup to
+    // one location and render to one name, instead of staying distinct yet colliding.
+    abstract_location makeLoc(const process_expression& e, const symbol_map& beta,
+                              const subst_env& env = {}) {
+      std::set<data::variable> fv = process::find_free_variables(e);
+      // env binds the formals free in e; its RHS expressions may reference
+      // further-out variables (when the substitution is not yet ground), whose β
+      // bindings must be retained so the RHS can be converted later.
+      subst_env restrictedEnv;
+      std::set<data::variable> keep = fv;
+      for (const auto& [v, expr] : env) {
+        if (fv.count(v) != 0u) {
+          restrictedEnv[v] = expr;
+          std::set<data::variable> rhsFv = data::find_free_variables(expr);
+          keep.insert(rhsFv.begin(), rhsFv.end());
+        }
+      }
+      symbol_map restrictedBeta;
+      for (const auto& [v, name] : beta) {
+        if (keep.count(v) != 0u) {
+          restrictedBeta[v] = name;
+        }
+      }
+      return process_location{e, restrictedBeta, restrictedEnv};
+    }
+
+    // β for an equation: each formal parameter is bound to a JANI variable named
+    // "<Process>_<param>", so parameters of different equations never clash.
+    symbol_map makeBeta(const process_identifier& id, const data::variable_list& params) {
+      symbol_map beta;
+      string prefix = pp(id.name());
+      for (const auto& v : params) {
+        beta[v] = prefix + "_" + pp(v.name());
+      }
+      return beta;
+    }
+
+    // Maps an abstract location to its JANI location name. The name renders the
+    // process expression with each free variable replaced by the JANI variable name β
+    // assigns it (and by its env expression where present), so that distinct locations
+    // that share a process sub-term get distinct names: e.g. b(n) under β:n↦P_n vs
+    // n↦Q_n becomes "b(P_n)" vs "b(Q_n)" instead of colliding on pp(expr). Because
+    // makeLoc restricts β/env to the free variables of expr, the rendered name is a
+    // function of the full (expr, β, env) identity.
     string locationName(const abstract_location& loc) {
       if (std::holds_alternative<termination_t>(loc)) {
         return TERMINATION_LOCATION_NAME;
       }
-      return pp(std::get<process_expression>(loc));
+      const process_location& pl = std::get<process_location>(loc);
+      data::mutable_map_substitution<> sigma;
+      for (const auto& [v, name] : pl.beta) {
+        sigma[v] = data::variable(mcrl2::core::identifier_string(name), v.sort());
+      }
+      // env (when non-empty) substitutes the variable away entirely, so it takes
+      // precedence over β. Single pass, no recursion into the RHS (cf. thesis psub).
+      for (const auto& [v, expr] : pl.env) {
+        sigma[v] = expr;
+      }
+      return pp(process::replace_variables(pl.expr, sigma));
     }
 
     // Re-sources every edge of `transitions` to `newSource` (in place) and returns
@@ -854,18 +995,100 @@ public:
       return transitions;
     }
 
-    // Computes the outgoing transitions of a location. This function is PURE: it
-    // does not touch the automaton (no locations/edges are committed here), which
-    // lets it recurse through composite operators to inspect sub-expressions
-    // without materialising states we only needed to look at. Committing happens
-    // in translateProcessExpression.
+    // Target of a sequential composition p·q given a transition of p reaching
+    // `target`: q if p terminated (Seq-2), else target·q (Seq-1). The merged β
+    // covers both target's free variables and q's (their JANI names never clash).
+    abstract_location seqTarget(const abstract_location& target,
+                                const process_expression& right, const symbol_map& beta) {
+      if (std::holds_alternative<termination_t>(target)) {
+        return makeLoc(right, beta);
+      }
+      const process_location& tpl = std::get<process_location>(target);
+      symbol_map merged = beta;
+      merged.insert(tpl.beta.begin(), tpl.beta.end());
+      return makeLoc(seq(tpl.expr, right), merged);
+    }
+
+    // env as an mCRL2 substitution, for rewriting guards (and actuals) before
+    // conversion. Single-pass / no recursion into RHS, matching the thesis psub.
+    data::mutable_map_substitution<> toSubst(const subst_env& env) {
+      data::mutable_map_substitution<> s;
+      for (const auto& [v, e] : env) {
+        s[v] = e;
+      }
+      return s;
+    }
+
+    // Result of entering a process instance P(actual) while in scope (β, env) with
+    // the given head-chain `pending` assignments: the body is explored as the
+    // first-class (but never stored) location (eqn.expression(), mergedBeta, newEnv).
+    struct instance_entry {
+      symbol_map mergedBeta;   // β ∪ βP, callee winning on same-named formals
+      subst_env newEnv;        // {formalᵢ ↦ psub(actualᵢ, env)} — drives the body's guards
+      json::array newPending;  // pending ++_* {βP(formalᵢ) := convert(actualᵢ)} — edge asgns
+    };
+
+    // Builds the scope for the body of P(actual) per the Fijación/Recursión rules.
+    // Two distinct jobs (thesis: c' = as(c) and W' = as ++_* bs):
+    //  - newEnv composes the substitution into the actuals, so the body's GUARDS resolve
+    //    to ground / already-committed values (a guard cannot read a var assigned on the
+    //    same edge);
+    //  - newPending carries the EDGE assignments with the actuals left SYMBOLIC
+    //    (βP(formalᵢ) := convert(actualᵢ)) and is merged via ++_* (iiconcat) so an outer
+    //    instance's assignments get a strictly lower index and run first. The body's tail
+    //    instances stay symbolic, referencing the βP variables these assignments set.
+    instance_entry enterInstance(const process_identifier& id, const process_equation& eqn,
+                                 const data::data_expression_list& actuals,
+                                 const symbol_map& beta, const subst_env& env,
+                                 const json::array& pending) {
+      symbol_map betaP = makeBeta(id, eqn.formal_parameters());
+      // Callee bindings win for formals sharing a name+sort across equations.
+      symbol_map mergedBeta = beta;
+      for (const auto& [v, name] : betaP) {
+        mergedBeta[v] = name;
+      }
+      data::mutable_map_substitution<> envSubst = toSubst(env);
+      subst_env newEnv;
+      // This instance's parameter assignments, all at index 0 (simultaneous — so e.g.
+      // P(x,y) = … P(y,x) is a correct swap). Values are left symbolic.
+      json::array currentLayerAs;
+      auto fit = eqn.formal_parameters().begin();
+      auto ait = actuals.begin();
+      for (; fit != eqn.formal_parameters().end() && ait != actuals.end(); ++fit, ++ait) {
+        // Guards: compose the substitution into the actual (resolve to ground/committed).
+        newEnv[*fit] = data::replace_variables(*ait, envSubst);
+        // Declare the target JANI variable (an unused parameter is free in no stored
+        // location, so collectVariables would otherwise miss it).
+        jani_variable_sorts[betaP.at(*fit)] = fit->sort();
+        // Edge assignment: actual kept symbolic, resolved only through β.
+        currentLayerAs.push_back(json::object{
+          {"ref", betaP.at(*fit)},
+          {"value", convert_data_expression(*ait, mergedBeta)},
+          {"index", 0}
+        });
+      }
+      // ++_*: outer (pending) assignments get the lower indices and run first; for a
+      // single (non-nested) instance pending is empty and iiconcat is the identity.
+      json::array newPending = iiconcat(pending, currentLayerAs);
+      return instance_entry{mergedBeta, newEnv, newPending};
+    }
+
+    // Computes the outgoing transitions of a location. PURE: it does not touch the
+    // automaton, so it can recurse through composite operators without materialising
+    // states. Committing happens in translateProcessExpression.
     //
-    // Returns a list of (edge, location) pairs, where `edge` is the JANI edge that
-    // leads to `location`. Every returned edge has source = locationName(loc).
-    //
-    // successors is the SOS transition relation (→); a termination_t in the result
-    // encodes the successful-termination predicate ✓ (the JANI `termination` sink).
+    // Returns (edge, location) pairs; every edge has source = locationName(loc).
+    // successors is the SOS transition relation (→); a termination_t encodes ✓.
     list<transition> successors(const abstract_location& loc) {
+      std::set<process_identifier> unfolding;
+      return successors(loc, unfolding);
+    }
+
+    // `unfolding` tracks the process identifiers expanded in the current
+    // action-free head position, to reject unguarded recursion (e.g. P = P). It is
+    // taken by value so sibling branches explore independently.
+    list<transition> successors(const abstract_location& loc, std::set<process_identifier> unfolding,
+                                json::array pending = json::array({})) {
       list<transition> result;
 
       // termination is a sink: no outgoing transitions.
@@ -873,49 +1096,91 @@ public:
         return result;
       }
 
-      const process_expression& expr = std::get<process_expression>(loc);
+      const process_location& pl = std::get<process_location>(loc);
+      const process_expression& expr = pl.expr;
+      const symbol_map& beta = pl.beta;
+      // The head-chain substitution since the last action: resolves guards (env) and
+      // is materialised on this step's action edge (pending). Both reset across an
+      // action — tails reached via seqTarget are env-free and start with empty pending.
+      const subst_env& env = pl.env;
 
-      // (Act)  a ──a──▶ ✓
+      // (Act)  a(d) ──a──▶ ✓   (data arguments deferred); the head-chain parameter
+      // assignments accumulated in `pending` are emitted on this edge.
       if (is_action(expr)) {
         const process::action& act = atermpp::down_cast<process::action>(expr);
-        // Use the action label so the edge references an action declared by
-        // translateActions (which also names actions with pp(action_label)).
-        // Data arguments on the action are out of scope for now.
-        json::object edge = makeEdge(locationName(loc), TERMINATION_LOCATION_NAME, pp(act.label()));
+        json::object edge = makeEdge(locationName(loc), TERMINATION_LOCATION_NAME, pp(act.label()),
+                                     normalizeAssignmentIndices(pending));
         result.push_back({edge, termination_t{}});
       }
-      // (Delta)  δ : deadlock, no rules, no transitions.
+      // (Delta)  δ : deadlock, no transitions.
       else if (is_delta(expr)) {
         // no successors
       }
-      // (Choice-L) p ──a──▶ p' ⟹ p+q ──a──▶ p'
-      // (Choice-R) q ──a──▶ q' ⟹ p+q ──a──▶ q'
+      // (Choice-L/R)
       else if (is_choice(expr)) {
         const process::choice& choiceExpr = atermpp::down_cast<process::choice>(expr);
-        result.splice(result.end(), reSource(successors(choiceExpr.left()), locationName(loc)));
-        result.splice(result.end(), reSource(successors(choiceExpr.right()), locationName(loc)));
+        result.splice(result.end(), reSource(successors(makeLoc(choiceExpr.left(), beta, env), unfolding, pending), locationName(loc)));
+        result.splice(result.end(), reSource(successors(makeLoc(choiceExpr.right(), beta, env), unfolding, pending), locationName(loc)));
       }
-      // (Seq-1) p ──a──▶ p' ⟹ p·q ──a──▶ p'·q
-      // (Seq-2) p ──a──▶ ✓  ⟹ p·q ──a──▶ q
+      // (Seq-1) p·q ──a──▶ p'·q   (Seq-2) p ──a──▶ ✓ ⟹ p·q ──a──▶ q
       else if (is_seq(expr)) {
         const seq& sequence = atermpp::down_cast<seq>(expr);
         const process_expression& right = sequence.right();
 
-        for (auto& [edge, target] : successors(sequence.left())) {
-          abstract_location newTarget = std::holds_alternative<termination_t>(target)
-            ? abstract_location(right)                                                      // (Seq-2)
-            : abstract_location(process_expression(seq(std::get<process_expression>(target), right))); // (Seq-1)
-
+        for (auto& [edge, target] : successors(makeLoc(sequence.left(), beta, env), unfolding, pending)) {
+          abstract_location newTarget = seqTarget(target, right, beta);
           edge["location"] = locationName(loc);
           edge["destinations"].as_array()[0].as_object()["location"] = locationName(newTarget);
           result.push_back({edge, newTarget});
         }
       }
-      // (Inst)  body(P) ──a──▶ p' ⟹ P ──a──▶ p'   where P = body(P)
+      // (Cond1)  c -> p : guard p's transitions with c (deadlock when ¬c)
+      else if (is_if_then(expr)) {
+        const if_then& cond = atermpp::down_cast<if_then>(expr);
+        data::mutable_map_substitution<> envSubst = toSubst(env);
+        json::value guard = convert_data_expression(data::replace_variables(cond.condition(), envSubst), beta);
+        for (auto& [edge, target] : reSource(successors(makeLoc(cond.then_case(), beta, env), unfolding, pending), locationName(loc))) {
+          strengthenGuardOfEdge(edge, guard);
+          result.push_back({edge, target});
+        }
+      }
+      // (Cond2)  c -> p <> q : p guarded by c, q guarded by ¬c
+      else if (is_if_then_else(expr)) {
+        const if_then_else& cond = atermpp::down_cast<if_then_else>(expr);
+        data::mutable_map_substitution<> envSubst = toSubst(env);
+        json::value guard = convert_data_expression(data::replace_variables(cond.condition(), envSubst), beta);
+        json::object negGuard = negateGuardExpression(guard);
+        for (auto& [edge, target] : reSource(successors(makeLoc(cond.then_case(), beta, env), unfolding, pending), locationName(loc))) {
+          strengthenGuardOfEdge(edge, guard);
+          result.push_back({edge, target});
+        }
+        for (auto& [edge, target] : reSource(successors(makeLoc(cond.else_case(), beta, env), unfolding, pending), locationName(loc))) {
+          strengthenGuardOfEdge(edge, negGuard);
+          result.push_back({edge, target});
+        }
+      }
+      // (Inst+Fijación)  P(actual): the transitions are those of the body explored as
+      // the first-class location (body, mergedβ, env'), which is NOT committed to the
+      // automaton — it lives only in this recursion. enterInstance composes the
+      // substitution into env' (for the body's guards) and accumulates the parameter
+      // assignments onto pending (emitted on the next action edge). The body's tail
+      // instances stay symbolic, so tail recursion is finite.
       else if (is_process_instance(expr)) {
         const process_instance& procInst = atermpp::down_cast<process_instance>(expr);
-        process_equation eqn = lookup_process_equation(procInst.identifier());
-        result = reSource(successors(eqn.expression()), locationName(loc));
+        const process_identifier& id = procInst.identifier();
+        if (unfolding.contains(id)) {
+          throw jani_translation_error("Unguarded recursion through process " + pp(id) +
+            " (no action before recursing); cannot build a finite automaton.");
+        }
+        unfolding.insert(id);
+
+        const process_equation& eqn = lookup_process_equation(id);
+        instance_entry e = enterInstance(id, eqn, procInst.actual_parameters(), beta, env, pending);
+        for (auto& [edge, target] :
+             reSource(successors(makeLoc(eqn.expression(), e.mergedBeta, e.newEnv), unfolding, e.newPending),
+                      locationName(loc))) {
+          result.push_back({edge, target});
+        }
       }
       else {
         throw jani_translation_error(
@@ -923,6 +1188,16 @@ public:
       }
 
       return result;
+    }
+
+    // Records the JANI variables named by a location's symbol map, for declaration.
+    void collectVariables(const abstract_location& loc) {
+      if (std::holds_alternative<termination_t>(loc)) {
+        return;
+      }
+      for (const auto& [var, name] : std::get<process_location>(loc).beta) {
+        jani_variable_sorts[name] = var.sort();
+      }
     }
 
     // Explores the locations reachable from `initial` and commits the
@@ -934,6 +1209,7 @@ public:
       list<abstract_location> work_queue = {initial};
       set<abstract_location> discovered = {initial};
 
+      collectVariables(initial);
       addStateToAutomaton(json::object{{"name", locationName(initial)}});
 
       while (!work_queue.empty()) {
@@ -944,6 +1220,7 @@ public:
           addEdgeToAutomaton(edge);
           if (!discovered.contains(target)) {
             discovered.insert(target);
+            collectVariables(target);
             addStateToAutomaton(json::object{{"name", locationName(target)}});
             work_queue.push_back(target);
           }
@@ -955,15 +1232,25 @@ public:
 
     json::object translate(){
 
-      auto initialLocation = translateProcessExpression(initial_process_call);
+      auto initialLocation = translateProcessExpression(makeLoc(initial_process_call, symbol_map{}));
 
       jani_automaton["initial-locations"] = json::array({initialLocation});
 
-      // TODO: use the pending assignments to set initial values for local variables
+      // Declare the automaton-local variables discovered during exploration. Their
+      // values are established by the outgoing-edge assignments of the instance
+      // nodes, so a default initial-value suffices.
+      json::array variables;
+      for (const auto& [name, sort] : jani_variable_sorts) {
+        variables.push_back(json::object{
+          {"name", name},
+          {"type", convert_sort_expression(sort)},
+          {"initial-value", initial_value_for_sort(sort)}
+        });
+      }
+      jani_automaton["variables"] = variables;
 
       // No unreachable-cleanup pass needed: successors is pure and
-      // translateProcessExpression only commits locations/edges reachable from the
-      // initial location.
+      // translateProcessExpression only commits reachable locations/edges.
 
       return jani_automaton;
     };
@@ -1499,7 +1786,7 @@ public:
     return json::object(
       {
         {"name", "mCRL2_to_JANI_model"},
-        {"type", "pta"},
+        {"type", "mdp"},
         {"jani-version", 1},
         {"variables", jani_variables},
         {"automata", jani_automata},
@@ -1559,28 +1846,25 @@ public:
           // newEdge["location"] = edge["location"];
 
           for (uint i = 0; i < destination.at("assignments").as_array().size(); i++) {
-            string oldRef = destination.at("assignments").at(i).at("ref").as_string().c_str();
+            auto assignment = destination.at("assignments").at(i).as_object();
+            string oldRef = assignment.at("ref").as_string().c_str();
 
-            // variables won't have a digit as a first character
-            // this way we know this is a writing actions assignment
+            // Transient action-data assignments are tagged by a digit-leading ref
+            // (the action argument index); these are replicated to every reading
+            // action that may read this writing action's value. Assignments with a
+            // non-digit ref (e.g. recursion parameters P_n) are not part of the
+            // communication machinery and must be preserved untouched.
+            if (!isdigit(oldRef[0])) {
+              newAssignments.push_back(assignment);
+              continue;
+            }
+
+            json::value val = assignment.at("value");
             for (auto& readAction : writeToReads[actionName]) {
-              auto newAssignment = destination.at("assignments").at(i).as_object();
-
-              // if edge executes writing action, then add missing assignments
-              if(isdigit(oldRef[0])) {
-                string ref = readAction + "_" + oldRef; 
-                json::value val = destination.at("assignments").at(i).at("value");
-
-                newAssignment["ref"] = ref;
-                newAssignment["value"] = val;
-              }
-
+              json::object newAssignment = assignment;
+              newAssignment["ref"] = readAction + "_" + oldRef;
+              newAssignment["value"] = val;
               newAssignments.push_back(newAssignment);
-
-              // newAssignments.push_back(json::object({
-              //   {"value", val},
-              //   {"ref", ref}
-              // }));
             }
           }
 
