@@ -33,8 +33,12 @@ edits them and the formulas can change.** Core chapters:
   - **Read/write action discipline.** Since JANI has no `sum`, a `sum d:D` is read as
     *receiving a value*. Actions partition into disjoint `Act_read` (carry the first occurrence
     of a sum-bound var, passed *bare* — no `n+1`, no constants) and `Act_write`. `γ: Act_write →
-    𝒫(Act_read)` is the communication map. A write pushes args into each communicating read's
-    comm-vars at index 0; the read pulls at index 1 (strictly after writers).
+    𝒫(Act_read)` is the communication map. Each read action gets a **transient** comm var `ωᵢʳ`
+    per argument; a write pushes its args into each communicating read's `ωᵢʳ` at index 0 and the
+    read pulls at index 1 (strictly after writers). Additionally *every* action records its data
+    into a **non-transient** record var `ωᵢ` (record at index 2 for reads, index 1 for writes).
+    Only the communication group of sums is supported — finite-domain sums (e.g. the clock
+    `sum err . tick(t+err)`, where the bound var is never received bare) are rejected.
   - **`Stoch(p)`** — the initial state *distribution* (because `dist` can front-load
     probability); resolved by an `INIT --init--> Stoch(p)` edge.
   - **SOS rules** `p --c,ω--> 𝒲` for each operator, plus the assignment-list operators
@@ -68,7 +72,10 @@ the **callee winning** on same-named formals (so `P`/`Q` both using `n` resolve 
 the same edge); `pending` gains this instance's `βP(dᵢ) := convert(actualᵢ)` with the actual left
 **symbolic**, merged via `iiconcat` (the thesis `++_*`) so an outer instance's assignments take
 lower indices and run first (within one instance all dᵢ share an index → simultaneous, e.g. a
-`P(y,x)` swap). Indices are normalized non-negative at the action edge. Tails reached via
+`P(y,x)` swap). On the action edge `pending` is folded *below* the action's own comm/record
+assignments via `iiconcat`, taking lower (possibly **negative**) indices that run first; indices
+are intentionally **not** normalized, so a writer's push (`@0`) stays strictly below a reader's
+pull (`@1`) on the shared scale once edges synchronise. Tails reached via
 `seqTarget` are env-/pending-free and stay symbolic, so recursion through process identifiers
 terminates (the `unfolding` set rejects unguarded recursion). This is faithful to the thesis
 Fijación/Recursión rules (`c' = as(c)`, `W' = as ++_* bs`) and fixes the cross-scope-guard
@@ -106,7 +113,7 @@ verify changes by running the tool on a spec and inspecting the JANI output.
 
 ## mcrl22jani architecture
 
-Everything lives in the single file `tools/developer/mcrl22jani/mcrl22jani.cpp` (~1700 lines).
+Everything lives in the single file `tools/developer/mcrl22jani/mcrl22jani.cpp` (~2000 lines).
 The tool deliberately does **not** linearise the spec (the `linearise(...)` call is left
 commented out); it translates the process algebra directly. Key pieces, in dependency order:
 
@@ -118,7 +125,10 @@ commented out); it translates the process algebra directly. Key pieces, in depen
   init expression is treated as a **parallel composition of pCRL processes**: each operand
   becomes one JANI automaton, and the parallel/communication operators
   (`merge`/`allow`/`block`/`hide`/`rename`/`comm`) are folded into a `syncs_matrix` rather
-  than into the automata themselves. Produces a JANI model of `"type": "mdp"`.
+  than into the automata themselves. Produces a JANI model of `"type": "mdp"`. Order matters:
+  it builds the syncs matrix, then runs the **communication pipeline** (`annotateActions` →
+  `checkSyncs` → `computeGamma` → `addTransientVars`) so that γ and the read/write sets are
+  known *before* the automata are built, then translates each automaton with that info in hand.
 
 - **`pcrl_to_automaton_translator`** — translates one sequential (pCRL) process into a JANI
   automaton. This is a **graph traversal, not an AST traversal**: a location (`abstract_location
@@ -130,9 +140,22 @@ commented out); it translates the process algebra directly. Key pieces, in depen
 - **`syncs_matrix`** — models multi-party action synchronisation. mCRL2 channels are mapped to
   JANI by splitting each communicating action into **writing** vs **reading** actions; the
   matrix's rows are sync vectors (left = ordered actions per automaton, right = resulting
-  multi-action). `checkSyncs` enforces exactly one writer per sync; `addMissingAssignments`
-  back-fills reads. Built recursively (`buildSyncsMatrixRec`) by interpreting the parallel
-  operators, with operators `||`, `.allow()`, `.block()`, `.hide()`, `.rename()`.
+  multi-action). `checkSyncs` enforces exactly one writer per sync. Built recursively
+  (`buildSyncsMatrixRec`) by interpreting the parallel operators, with operators `||`,
+  `.allow()`, `.block()`, `.hide()`, `.rename()`.
+
+- **Communication machinery (summation).** `annotateActions` walks every equation body in
+  flow order, classifying each action into the disjoint `readingActions` / `writingActions`
+  sets (a read is the *first bare occurrence* of a sum-bound var) and enforcing the thesis
+  constraints (bare read args, read/write disjointness, finite-domain rejection).
+  `computeGamma` derives `γ: Act_write → 𝒫(Act_read)` from the final syncs matrix (the single
+  writer of each row maps to that row's reads). `addTransientVars` declares the global comm vars
+  `a_r_i` (**transient**) for reads and record vars `a_i` (**non-transient**) for every action
+  with data (1-based). In `successors`, `buildActionAssignments` emits the read/write rule per
+  the thesis §Acciones (`iconcat` of the comm `as` and record `bs`), and the `is_sum` case binds
+  each sum var to an automaton-local `sum_<v>` (the pull target). The earlier lazy back-fill pass
+  (`addMissingAssignments`) and the per-edge `normalizeAssignmentIndices` were removed: γ is known
+  eagerly so writes emit their pushes directly, and indices are left un-normalized (see above).
 
 - **Data/sort conversion** — `convert_sort_expression` and `convert_data_expression` map
   mCRL2 sorts/expressions to JANI. JANI only supports `bool`/`int`/`real` plus bounded

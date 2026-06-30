@@ -206,6 +206,13 @@ public:
     // order is deterministic (never iterate aterm-keyed containers for output).
     std::map<std::string, data::sort_expression> jani_variable_sorts;
 
+    // Read/write action classification and the communication map γ : Act_write →
+    // 𝒫(Act_read), both computed once up front by jani_translator and passed in.
+    // Used by the action edge (thesis §Acciones) to emit comm-var pushes/pulls.
+    actionSet readingActions;
+    actionSet writingActions;
+    std::map<std::string, std::set<std::string>> gamma;
+
     const string DELTA_LOCATION_NAME = "delta_state";
     const string TERMINATION_LOCATION_NAME = "termination";
 
@@ -527,32 +534,6 @@ public:
     return result;
   }
 
-  // Shifts every assignment index by a constant so the minimum becomes 0, preserving
-  // the relative order and the equal-index (simultaneous) groups. ++_* (iiconcat) can
-  // produce negative indices; JANI assignment indices are emitted non-negative.
-  json::array normalizeAssignmentIndices(const json::array& as) {
-    if (as.empty()) {
-      return as;
-    }
-    int min_idx = get_min_index(as);
-    if (min_idx == 0) {
-      return as;
-    }
-    json::array result;
-    for (const auto& assignment : as) {
-      if (assignment.is_object()) {
-        json::object obj = assignment.as_object();
-        if (obj.contains("index") && obj.at("index").is_int64()) {
-          obj["index"] = static_cast<int>(obj.at("index").as_int64()) - min_idx;
-        }
-        result.push_back(obj);
-      } else {
-        result.push_back(assignment);
-      }
-    }
-    return result;
-  }
-
   // apply_assignments(as, expr): Apply an assignment list as substitution to an expression
   // This function applies the variable assignments from the assignment list to the expression
   // Variables are substituted with their assigned values in order of their indices
@@ -853,8 +834,11 @@ public:
 
 
   public:
-    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, string automatonName)
-    : initial_process_call(initial_process_call)
+    pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, string automatonName,
+                                 const actionSet& readingActions, const actionSet& writingActions,
+                                 const std::map<std::string, std::set<std::string>>& gamma)
+    : initial_process_call(initial_process_call),
+      readingActions(readingActions), writingActions(writingActions), gamma(gamma)
     {
       this->spec = spec;
 
@@ -1019,7 +1003,7 @@ public:
       return s;
     }
 
-    // Result of entering a process instance P(actual) while in scope (β, env) with
+    // Result of entering a process expression while in scope (β, env) with
     // the given head-chain `pending` assignments: the body is explored as the
     // first-class (but never stored) location (eqn.expression(), mergedBeta, newEnv).
     struct instance_entry {
@@ -1073,6 +1057,49 @@ public:
       return instance_entry{mergedBeta, newEnv, newPending};
     }
 
+    // Builds the edge assignment list for an action ω(x⃗) per the thesis §Acciones
+    // rule  ω(x⃗) --ω--> 𝒟(as ⧺* bs, ✓)  (⧺* = iconcat, shifting bs above as).
+    //  - Read ω (args are bare read-vars xᵢ): as = pull xᵢ := ωᵢʳ @1 ; bs = record ωᵢ := xᵢ @0
+    //    ⟹ pull @1, record @2.
+    //  - Write ω (arg expressions xᵢ): as = push aᵢʳ := xᵢ @0 for every a ∈ γ(ω) ;
+    //    bs = record ωᵢ := xᵢ @0  ⟹ push @0, record @1 (record @0 when γ(ω)=∅).
+    // Values referencing variables are bare identifier strings, as convert_data_expression
+    // emits for a variable. The caller folds the head-chain `pending` in below via iiconcat.
+    json::array buildActionAssignments(const process::action& act, const symbol_map& beta) {
+      const string actionName = pp(act.label().name());
+      const data::data_expression_list& args = act.arguments();
+
+      json::array as;  // comm channel: pull (read) / push (write)
+      json::array bs;  // record: ωᵢ := xᵢ
+
+      if (readingActions.contains(actionName)) {
+        uint i = 1;
+        for (const auto& arg : args) {
+          // Reads were validated to take bare read-variables, so convert yields a ref.
+          const json::value bareVar = convert_data_expression(arg, beta);
+          const string commVar = actionName + "_r_" + to_string(i);
+          const string recordVar = actionName + "_" + to_string(i);
+          as.push_back(json::object{{"ref", bareVar.as_string().c_str()}, {"value", commVar}, {"index", 1}});
+          bs.push_back(json::object{{"ref", recordVar}, {"value", bareVar}, {"index", 0}});
+          i++;
+        }
+      } else {
+        const set<string> reads = gamma.contains(actionName) ? gamma.at(actionName) : set<string>{};
+        uint i = 1;
+        for (const auto& arg : args) {
+          const json::value value = convert_data_expression(arg, beta);
+          const string recordVar = actionName + "_" + to_string(i);
+          for (const auto& readName : reads) {
+            as.push_back(json::object{{"ref", readName + "_r_" + to_string(i)}, {"value", value}, {"index", 0}});
+          }
+          bs.push_back(json::object{{"ref", recordVar}, {"value", value}, {"index", 0}});
+          i++;
+        }
+      }
+
+      return iconcat(as, bs);
+    }
+
     // Computes the outgoing transitions of a location. PURE: it does not touch the
     // automaton, so it can recurse through composite operators without materialising
     // states. Committing happens in translateProcessExpression.
@@ -1104,12 +1131,15 @@ public:
       // action — tails reached via seqTarget are env-free and start with empty pending.
       const subst_env& env = pl.env;
 
-      // (Act)  a(d) ──a──▶ ✓   (data arguments deferred); the head-chain parameter
-      // assignments accumulated in `pending` are emitted on this edge.
+      // (Act)  ω(x⃗) ──ω──▶ ✓ with comm/record assignments (buildActionAssignments).
+      // The head-chain parameter assignments (`pending`) fold in below via iiconcat,
+      // so they take lower (possibly negative) indices and run first; indices are left
+      // un-normalized so the writer-push (@0) stays strictly below the reader-pull (@1)
+      // on the shared absolute scale once edges synchronise.
       if (is_action(expr)) {
         const process::action& act = atermpp::down_cast<process::action>(expr);
-        json::object edge = makeEdge(locationName(loc), TERMINATION_LOCATION_NAME, pp(act.label()),
-                                     normalizeAssignmentIndices(pending));
+        json::array assignments = iiconcat(pending, buildActionAssignments(act, beta));
+        json::object edge = makeEdge(locationName(loc), TERMINATION_LOCATION_NAME, pp(act.label()), assignments);
         result.push_back({edge, termination_t{}});
       }
       // (Delta)  δ : deadlock, no transitions.
@@ -1178,6 +1208,25 @@ public:
         instance_entry e = enterInstance(id, eqn, procInst.actual_parameters(), beta, env, pending);
         for (auto& [edge, target] :
              reSource(successors(makeLoc(eqn.expression(), e.mergedBeta, e.newEnv), unfolding, e.newPending),
+                      locationName(loc))) {
+          result.push_back({edge, target});
+        }
+      }
+      // (Sum)  Σ_{d:D} p behaves exactly like its operand (thesis "Cuantificadores");
+      // it only introduces the read-variable(s) d, each bound to a fresh automaton-local
+      // JANI variable that the read action pulls a received value into.
+      else if (is_sum(expr)) {
+        const process::sum& sumExpr = atermpp::down_cast<process::sum>(expr);
+        symbol_map extendedBeta = beta;
+        for (const data::variable& v : sumExpr.variables()) {
+          // "sum_"-prefixed so the bound var never collides with an equation parameter
+          // (named <Process>_<param>) or a comm/record var (named <action>[_r]_<i>).
+          string janiName = "sum_" + pp(v.name());
+          extendedBeta[v] = janiName;
+          jani_variable_sorts[janiName] = v.sort();
+        }
+        for (auto& [edge, target] :
+             reSource(successors(makeLoc(sumExpr.operand(), extendedBeta, env), unfolding, pending),
                       locationName(loc))) {
           result.push_back({edge, target});
         }
@@ -1551,6 +1600,8 @@ class jani_translator
   private:
   actionSet readingActions;
   actionSet writingActions;
+  // γ : Act_write → 𝒫(Act_read), computed by computeGamma from the final syncs matrix.
+  map<string, set<string>> gamma;
   map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
@@ -1665,6 +1716,130 @@ class jani_translator
     return buildSyncsMatrixRec(initialProcess);
   }
 
+  // ---- AST annotation: split action labels into Act_read / Act_write -------------
+  // A reading action is one whose data includes the FIRST occurrence of a sum-bound
+  // ("read") variable as a BARE argument (thesis §"Sobre la cuantificación de decisión
+  // y la comunicación"). The two sets are disjoint. Only communication-style sums are
+  // supported: every sum-bound variable must be received bare by some reading action;
+  // finite-domain sums (e.g. the clock `sum err . tick(t+err)`) are rejected.
+  //
+  // Note: read-variable identity is by name+sort (mCRL2 variables are shared terms), so
+  // the finite-domain check is per-variable, not per-occurrence — it rejects a sum var
+  // never read bare *anywhere*, which covers the intended cases.
+
+  // Classify one action occurrence (read vs write), validate it, and record the read
+  // variables it consumes. `consumed` is the path-local set of read variables whose
+  // first bare occurrence has already been seen.
+  void classifyAction(const process::action& act,
+                      const set<data::variable>& inScopeReadVars,
+                      set<data::variable>& consumed,
+                      set<data::variable>& readBareVars) {
+    const string name = pp(act.label().name());
+
+    bool isRead = false;
+    for (const auto& arg : act.arguments()) {
+      if (is_variable(arg)) {
+        const data::variable& v = atermpp::down_cast<data::variable>(arg);
+        if (inScopeReadVars.contains(v) && !consumed.contains(v)) { isRead = true; break; }
+      }
+    }
+
+    if (isRead) {
+      for (const auto& arg : act.arguments()) {
+        if (!is_variable(arg) || !inScopeReadVars.contains(atermpp::down_cast<data::variable>(arg))) {
+          throw jani_translation_error("Reading action " + name + " must take only bare "
+            "sum-bound variables as arguments; got '" + pp(arg) + "' in " + pp(act) + ".");
+        }
+        const data::variable& v = atermpp::down_cast<data::variable>(arg);
+        consumed.insert(v);
+        readBareVars.insert(v);
+      }
+      if (writingActions.contains(name)) {
+        throw jani_translation_error("Action " + name + " is used as both a reading and a "
+          "writing action; the read/write action sets must be disjoint.");
+      }
+      readingActions.insert(name);
+    } else {
+      if (readingActions.contains(name)) {
+        throw jani_translation_error("Action " + name + " is used as both a reading and a "
+          "writing action; the read/write action sets must be disjoint.");
+      }
+      writingActions.insert(name);
+    }
+  }
+
+  void annotateRec(const process_expression& expr,
+                   const set<data::variable>& inScopeReadVars,
+                   set<data::variable>& consumed,
+                   set<data::variable>& sumVars,
+                   set<data::variable>& readBareVars) {
+    if (is_action(expr)) {
+      classifyAction(atermpp::down_cast<process::action>(expr), inScopeReadVars, consumed, readBareVars);
+    } else if (is_delta(expr)) {
+      // no actions
+    } else if (is_seq(expr)) {
+      const seq& s = atermpp::down_cast<seq>(expr);
+      annotateRec(s.left(), inScopeReadVars, consumed, sumVars, readBareVars);
+      annotateRec(s.right(), inScopeReadVars, consumed, sumVars, readBareVars);
+    } else if (is_choice(expr) || is_if_then_else(expr)) {
+      process_expression l = is_choice(expr) ? atermpp::down_cast<choice>(expr).left()
+                                             : atermpp::down_cast<if_then_else>(expr).then_case();
+      process_expression r = is_choice(expr) ? atermpp::down_cast<choice>(expr).right()
+                                             : atermpp::down_cast<if_then_else>(expr).else_case();
+      set<data::variable> cl = consumed, cr = consumed;
+      annotateRec(l, inScopeReadVars, cl, sumVars, readBareVars);
+      annotateRec(r, inScopeReadVars, cr, sumVars, readBareVars);
+      // After a branch, a variable counts as consumed only if consumed on both paths.
+      set<data::variable> both;
+      for (const auto& v : cl) { if (cr.contains(v)) { both.insert(v); } }
+      consumed = both;
+    } else if (is_if_then(expr)) {
+      annotateRec(atermpp::down_cast<if_then>(expr).then_case(), inScopeReadVars, consumed, sumVars, readBareVars);
+    } else if (is_sum(expr)) {
+      const process::sum& s = atermpp::down_cast<process::sum>(expr);
+      set<data::variable> extended = inScopeReadVars;
+      for (const data::variable& v : s.variables()) { extended.insert(v); sumVars.insert(v); }
+      annotateRec(s.operand(), extended, consumed, sumVars, readBareVars);
+    } else if (is_process_instance(expr)) {
+      // a separate scope: read variables do not cross process boundaries.
+    }
+    // pcrl equation bodies contain only the operators above; anything else is ignored.
+  }
+
+  void annotateActions() {
+    set<data::variable> sumVars;
+    set<data::variable> readBareVars;
+    for (const auto& eqn : spec.equations()) {
+      set<data::variable> consumed;
+      annotateRec(eqn.expression(), {}, consumed, sumVars, readBareVars);
+    }
+    for (const auto& v : sumVars) {
+      if (!readBareVars.contains(v)) {
+        throw jani_translation_error("Sum variable " + pp(v) + " is never received bare by a "
+          "reading action. Finite-domain summation is not supported by this translation; "
+          "model the choice over its (finite) domain explicitly instead.");
+      }
+    }
+  }
+
+  // γ : Act_write → 𝒫(Act_read). For each sync-matrix row, the single writing action
+  // maps to the reading actions in that row; unioned across rows.
+  void computeGamma(const syncs_matrix& syncsMatrix) {
+    gamma.clear();
+    for (const auto& row : syncsMatrix.matrix) {
+      string writingAction;
+      set<string> reads;
+      for (const auto& actionName : row.first) {
+        if (actionName == "null") { continue; }
+        if (readingActions.contains(actionName)) { reads.insert(actionName); }
+        else { writingAction = actionName; }
+      }
+      if (!writingAction.empty()) {
+        gamma[writingAction].insert(reads.begin(), reads.end());
+      }
+    }
+  }
+
 
   // translates prcl process equation to jani automaton
   json::object translate_process_equation(const process_instance& procInst) {
@@ -1680,37 +1855,43 @@ class jani_translator
       automatonCounters[procInst.identifier()]++;
     }
 
-    pcrl_to_automaton_translator translator(spec, procInst, automatonName);
+    pcrl_to_automaton_translator translator(spec, procInst, automatonName,
+                                            readingActions, writingActions, gamma);
     auto automaton = translator.translate();
     return automaton;
   }
 
 
+  // Declares the global communication and data-recording variables (thesis §"Variables
+  // de comunicación"). For each reading action: one TRANSIENT comm var ωᵢʳ per argument,
+  // named "<a>_r_<i>" (1-based) — the message channel a writer pushes to and the reader
+  // pulls from. For EVERY action carrying data (read or write): one NON-transient record
+  // var ωᵢ named "<a>_<i>", holding the data the action fired with (observable state).
   void addTransientVars() {
-    // for now, just add all action labels from the specification
     for (const auto& actionLabel : spec.action_labels()) {
+      const string actionName = pp(actionLabel.name());
+      const bool isRead = readingActions.contains(actionName);
 
-      auto actionName = pp(actionLabel.name());
+      uint i = 1;
+      for (const auto& sort : actionLabel.sorts()) {
+        auto jani_type = convert_sort_expression(sort);
+        auto initial_value = initial_value_for_sort(sort);
 
-      // allocate transient variables for this actions inputs
-      if (readingActions.contains(actionName)) {
-        uint i = 0;
-        for(const auto& sort : actionLabel.sorts() ) {
-          auto jani_type = convert_sort_expression(sort);
-          auto initial_value = initial_value_for_sort(sort);
-
-
-          jani_variables.push_back(json::object(
-            {
-              {"name", actionName + "_" + to_string(i)},
-              {"transient", true},
-              {"initial-value", initial_value},
-              {"type", jani_type}
-            }
-          ));
-          i++;
+        if (isRead) {
+          jani_variables.push_back(json::object{
+            {"name", actionName + "_r_" + to_string(i)},
+            {"transient", true},
+            {"initial-value", initial_value},
+            {"type", jani_type}
+          });
         }
-
+        // record var ωᵢ (non-transient) for every action that carries data.
+        jani_variables.push_back(json::object{
+          {"name", actionName + "_" + to_string(i)},
+          {"initial-value", initial_value},
+          {"type", jani_type}
+        });
+        i++;
       }
     }
   }
@@ -1752,9 +1933,15 @@ public:
     translateActions();
     auto syncsMatrix = buildSyncsMatrix();
 
-    for (const auto& procInst : prclProcesses) {
-      // cout << "Found pCRL process: " << process::pp(procInst) << endl;
+    // Annotate (read/write split) and derive γ *before* building the automata, so each
+    // automaton's action edges can emit their final communication assignments directly
+    // (the old lazy addMissingAssignments back-fill is no longer needed).
+    annotateActions();
+    syncsMatrix.checkSyncs(readingActions);
+    computeGamma(syncsMatrix);
+    addTransientVars();
 
+    for (const auto& procInst : prclProcesses) {
       jani_system_elements.push_back(
           json::value({{"automaton", pp(procInst.identifier())}})
       );
@@ -1762,26 +1949,7 @@ public:
       jani_automata.push_back(automaton);
     }
 
-    syncsMatrix.checkSyncs(readingActions);
-
-
     auto jsonMatrix = syncsMatrix.toJsonArray(jani_multiactions_set);
-
-    // multiactions must be explicitly made a communication
-    // "accidental multiactions are not allowed"
-    // TODO: throw a proper error instead of asserting
-    // assert(jani_multiactions_set.size() == 0);
-    // for (auto& multiaction : jani_multiactions_set) {
-    //   jani_actions.push_back(
-    //     json::object{
-    //       {"name", multiaction}
-    //     }
-    //   );
-    // }
-
-    addTransientVars();
-
-    addMissingAssignments(syncsMatrix);
 
     return json::object(
       {
@@ -1800,101 +1968,6 @@ public:
     );
   }
 
-  void addMissingAssignments(syncs_matrix syncsMatrix) {
-    // first compute the map writing action -> list of reading actions
-    json::array newJaniAutomata;
-    
-    map<string, set<string>> writeToReads;
-    for (auto& sync : syncsMatrix.matrix) {
-
-      string writingAction;
-      set<string> mappedReadingActions;
-
-      for (auto& actionName : sync.first) {
-        if (readingActions.contains(actionName)) {
-          mappedReadingActions.insert(actionName);
-        } else {
-          writingAction = actionName;
-        }
-      }
-
-      writeToReads[writingAction].insert(mappedReadingActions.begin(), mappedReadingActions.end());
-    }
-
-
-    // now add missing assignments on every automaton edge that executes a writing action.
-
-    for (auto& automaton : jani_automata) {
-      auto edgesV = automaton.at_pointer("/edges");
-      assert(edgesV.is_array());
-      auto edges = edgesV.as_array();
-
-      json::array newEdges;
-
-      for (auto& edgeV : edges) {
-        auto edge = edgeV.as_object();
-        string actionName;
-
-
-        bool isWritingAction = edge.contains("action") && edge.at("action").is_string() && !readingActions.contains(actionName = edge.at("action").as_string().c_str());
-        auto destination = (edge.at("destinations").as_array()[0]).as_object();
-        bool hasAssignments = destination.contains("assignments") && destination.at("assignments").is_array() && destination.at("assignments").as_array().size() > 0;
-        if (isWritingAction && hasAssignments) {
-          json::object newEdge = edge;
-          json::array newAssignments;
-          // newEdge["action"] = actionName;
-          // newEdge["location"] = edge["location"];
-
-          for (uint i = 0; i < destination.at("assignments").as_array().size(); i++) {
-            auto assignment = destination.at("assignments").at(i).as_object();
-            string oldRef = assignment.at("ref").as_string().c_str();
-
-            // Transient action-data assignments are tagged by a digit-leading ref
-            // (the action argument index); these are replicated to every reading
-            // action that may read this writing action's value. Assignments with a
-            // non-digit ref (e.g. recursion parameters P_n) are not part of the
-            // communication machinery and must be preserved untouched.
-            if (!isdigit(oldRef[0])) {
-              newAssignments.push_back(assignment);
-              continue;
-            }
-
-            json::value val = assignment.at("value");
-            for (auto& readAction : writeToReads[actionName]) {
-              json::object newAssignment = assignment;
-              newAssignment["ref"] = readAction + "_" + oldRef;
-              newAssignment["value"] = val;
-              newAssignments.push_back(newAssignment);
-            }
-          }
-
-          destination["assignments"] = newAssignments;
-          newEdge["destinations"] = json::array({destination});
-          newEdges.push_back(newEdge);
-          
-        } else {
-          newEdges.push_back(edge);
-        }
-      }
-      automaton.at_pointer("/edges") = newEdges;
-      newJaniAutomata.push_back(automaton);
-    }
-
-    jani_automata = newJaniAutomata;
-  }
-
-
-  /*
-  when processing a reading action, include its edge in a data structure that includes:
-  - a reference to the edge
-  - the (JANI) expressions it needs to assign
-  
-  later on, when we know which actions are reads, and which ones are writes, map every writing action
-  to the set of reading actions that possible read it's inputs according to the syncs matrix.
-
-  having this two data structures read (the edge tracking one, and the write -> reads map), we can
-  add the remaining assignments to the edges for the writing actions.
-  */
 };
 
 class mcrl22jani_tool : public rewriter_tool<input_output_tool>
