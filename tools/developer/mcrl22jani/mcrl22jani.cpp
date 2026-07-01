@@ -1974,12 +1974,79 @@ class jani_translator
     return collectPcrlProcessesRec(initialProcess);
   }
 
+  // Action-name alphabet reachable from a pCRL process body, following
+  // process_instance calls transitively. Mirrors annotateRec's structural
+  // recursion over the pCRL operators; recursion through process identifiers is
+  // broken by `visited` — each equation body contributes its actions at most
+  // once, which is exact because the alphabet is a monotone union (just like
+  // annotateActions, which visits every equation independently).
+  void collectActionAlphabet(const process_expression& expr,
+                             set<string>& alphabet,
+                             set<string>& visited) {
+    if (is_action(expr)) {
+      alphabet.insert(pp(atermpp::down_cast<process::action>(expr).label().name()));
+    } else if (is_delta(expr)) {
+      // no actions
+    } else if (is_seq(expr)) {
+      const seq& s = atermpp::down_cast<seq>(expr);
+      collectActionAlphabet(s.left(), alphabet, visited);
+      collectActionAlphabet(s.right(), alphabet, visited);
+    } else if (is_choice(expr)) {
+      const choice& c = atermpp::down_cast<choice>(expr);
+      collectActionAlphabet(c.left(), alphabet, visited);
+      collectActionAlphabet(c.right(), alphabet, visited);
+    } else if (is_if_then_else(expr)) {
+      const if_then_else& c = atermpp::down_cast<if_then_else>(expr);
+      collectActionAlphabet(c.then_case(), alphabet, visited);
+      collectActionAlphabet(c.else_case(), alphabet, visited);
+    } else if (is_if_then(expr)) {
+      collectActionAlphabet(atermpp::down_cast<if_then>(expr).then_case(), alphabet, visited);
+    } else if (is_sum(expr)) {
+      collectActionAlphabet(atermpp::down_cast<process::sum>(expr).operand(), alphabet, visited);
+    } else if (is_stochastic_operator(expr)) {
+      collectActionAlphabet(atermpp::down_cast<stochastic_operator>(expr).operand(), alphabet, visited);
+    } else if (is_process_instance(expr)) {
+      const string name = pp(process::process_instance(expr).identifier().name());
+      if (visited.insert(name).second) {
+        for (const auto& eqn : spec.equations()) {
+          if (pp(eqn.identifier().name()) == name) {
+            collectActionAlphabet(eqn.expression(), alphabet, visited);
+          }
+        }
+      }
+    }
+    // pcrl equation bodies contain only the operators above; anything else is ignored.
+  }
+
+  set<string> actionAlphabetOf(const process_expression& instanceExpr) {
+    set<string> alphabet;
+    set<string> visited;
+    collectActionAlphabet(instanceExpr, alphabet, visited);
+    return alphabet;
+  }
+
   syncs_matrix buildSyncsMatrixRec(const process_expression& expr) {
     if (is_process_instance(expr)) {
-      // base case: single process instance
+      // base case: single process instance. Only this automaton's *own* reachable
+      // actions matter — an identity/sync row for an action the automaton never
+      // performs is dead (never enabled in the JANI composition), so restricting
+      // the base alphabet to those actions avoids the combinatorial (A+1)^n
+      // blow-up of operator|| without changing the final allow/comm-pruned matrix.
+      set<string> local = actionAlphabetOf(expr);
       vector<string> actionsVector;
       for (const auto& el : jani_actions) {
-        actionsVector.push_back(el.as_object().at("name").as_string().c_str());
+        string nm = el.as_object().at("name").as_string().c_str();
+        if (local.count(nm)) {
+          actionsVector.push_back(nm);
+        }
+      }
+      if (actionsVector.empty()) {
+        // A do-nothing (delta-only) operand: fall back to the global alphabet so
+        // operator|| keeps a well-defined, non-empty width (all its rows are dead
+        // anyway, so this is behaviourally identical to the pre-optimisation code).
+        for (const auto& el : jani_actions) {
+          actionsVector.push_back(el.as_object().at("name").as_string().c_str());
+        }
       }
       return syncs_matrix(actionsVector);
     }
