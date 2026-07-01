@@ -553,7 +553,10 @@ public:
       for (; fit != eqn.formal_parameters().end() && ait != procInst.actual_parameters().end(); ++fit, ++ait) {
         newEnv[*fit] = data::replace_variables(*ait, envSubst);
         jani_variable_sorts[betaP.at(*fit)] = fit->sort();
-        paramAs.push_back({*fit, *ait, 0, betaP.at(*fit), convert_data_expression(*ait, mergedBeta)});
+        // Actual is an expression in the CALLER's scope: resolve it through the caller's β,
+        // NOT mergedBeta — else a caller variable sharing a name with a callee formal is
+        // captured (e.g. S(b)=…T(d,b) would emit T_d:=T_d instead of T_d:=<caller d>).
+        paramAs.push_back({*fit, *ait, 0, betaP.at(*fit), convert_data_expression(*ait, beta)});
       }
       // ⧺* (iconcat), not ++_*: the parameter assignments are the *move into* this
       // instance, so they must run AFTER the action that led here (the outer sequence rule
@@ -1299,10 +1302,13 @@ public:
         // Declare the target JANI variable (an unused parameter is free in no stored
         // location, so collectVariables would otherwise miss it).
         jani_variable_sorts[betaP.at(*fit)] = fit->sort();
-        // Edge assignment: actual kept symbolic, resolved only through β.
+        // Edge assignment: actual kept symbolic, resolved through the CALLER's β (`beta`),
+        // NOT mergedBeta — the actual lives in the caller's scope, so callee formals must not
+        // shadow it. Using mergedBeta captures caller vars that share a name with a callee
+        // formal (e.g. S(b)=…T(d,b) emitted T_d:=T_d / T_b:=T_b instead of the caller's d/b).
         currentLayerAs.push_back(json::object{
           {"ref", betaP.at(*fit)},
-          {"value", convert_data_expression(*ait, mergedBeta)},
+          {"value", convert_data_expression(*ait, beta)},
           {"index", 0}
         });
       }
