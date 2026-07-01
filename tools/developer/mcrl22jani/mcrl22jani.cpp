@@ -1943,14 +1943,20 @@ class jani_translator
   map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
-  multiset<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
+  // Returns the parallel operands in syntactic left-to-right order. This order
+  // MUST match the column order of buildSyncsMatrixRec (which also traverses the
+  // merge tree left-to-right, operator|| placing left columns before right):
+  // the automata / system-elements are emitted in this order, and each sync
+  // vector's columns are indexed by it. A multiset would reorder by aterm value
+  // and silently misalign every sync column against system.elements.
+  vector<process_instance> collectPcrlProcessesRec(const process_expression& expr) {
     if (is_process_instance(expr)) {
       return {down_cast<process_instance>(expr)};
     }
     else if (is_merge(expr)) {
         auto idsLeft = collectPcrlProcessesRec(process::merge(expr).left());
         auto idsRight = collectPcrlProcessesRec(process::merge(expr).right());
-        idsLeft.insert(idsRight.begin(), idsRight.end());
+        idsLeft.insert(idsLeft.end(), idsRight.begin(), idsRight.end());
         return idsLeft;
     } else if(is_allow(expr)) {
         return collectPcrlProcessesRec(process::allow(expr).operand()) ;
@@ -1968,7 +1974,7 @@ class jani_translator
       throw jani_translation_error("Unsupported process expression encountered during pCRL process collection.");
     }
   }
-  multiset<process_instance> collectPcrlProcesses() {
+  vector<process_instance> collectPcrlProcesses() {
     auto initialProcess = spec.init();
 
     return collectPcrlProcessesRec(initialProcess);
@@ -2339,7 +2345,7 @@ public:
   json::object translate_process_specification()
   {
 
-    multiset<process_instance> prclProcesses = collectPcrlProcesses();
+    vector<process_instance> prclProcesses = collectPcrlProcesses();
     translateActions();
     auto syncsMatrix = buildSyncsMatrix();
 
