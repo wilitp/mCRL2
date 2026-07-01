@@ -1,0 +1,57 @@
+% ============================================================================
+% Case study (classic / non-probabilistic): Alternating Bit Protocol (ABP)
+% ----------------------------------------------------------------------------
+% Adapted from examples/academic/abp/abp.mcrl2 (Groote & Mousavi, "Modeling and
+% Analysis of Communicating Systems", MIT Press 2014) so that it falls inside
+% the subset supported by mcrl22jani. Translates end-to-end to an `mdp` JANI
+% model and exercises the thesis's sum-based read/write communication machinery
+% (Act_read / Act_write, gamma, transient comm vars, assignment indices).
+%
+% Three adaptations were needed w.r.t. the upstream model, each illustrating a
+% boundary of the supported subset:
+%
+%   1. FINITE DATA. The data domain `D = struct d1 | d2` is encoded as `Bool`.
+%      JANI only supports bool/int/real/nat/pos; and a received value must range
+%      over finitely many reachable values (raw Nat would make the input sum
+%      unbounded and non-terminating for explicit-state exploration).
+%
+%   2. READ DISCIPLINE. A reading action must carry ONLY bare sum-bound
+%      variables. The upstream receiver `sum d. r3(d,b)` passes the *expected*
+%      bit `b` (a process parameter) non-bare. Here the receiver instead reads
+%      the bit into a fresh bare sum var `cb` and GUARDS on it: `(cb == b)`.
+%      This is behaviourally faithful (it still checks the alternating bit).
+%
+%   3. CLOSED COMMUNICATION. A lone external read `sum d. r1(d)` is rejected:
+%      in the JANI read/write encoding a read pulls a value some writer pushed,
+%      so a read needs exactly one writer (checkSyncs). The open input from the
+%      upper layer is therefore closed with an explicit `Source` that offers
+%      both data values as writes of constants, communicating with the sender
+%      via `gen | rgen -> cgen`. (A lone external *write* such as `s4` is fine.)
+% ============================================================================
+
+act
+  gen,rgen,cgen: Bool;      % upper layer -> sender (closes the open input)
+  s4: Bool;                 % delivered datum (lone external output)
+  s2,r2,c2: Bool # Bool;
+  s3,r3,c3: Bool # Bool;
+  s5,r5,c5: Bool;
+  s6,r6,c6: Bool;
+  i;
+
+proc
+  Source           = gen(true).Source + gen(false).Source;
+
+  S(b:Bool)        = sum d:Bool. rgen(d).T(d,b);
+  T(d:Bool,b:Bool) = s2(d,b).(sum ab:Bool. r6(ab).((ab == b) -> S(!b) <> T(d,b)));
+
+  K                = sum d:Bool,b:Bool. r2(d,b).(i.s3(d,b) + i).K;
+  L                = sum b:Bool.        r5(b).(i.s6(b) + i).L;
+
+  R(b:Bool)        = sum d:Bool, cb:Bool. r3(d,cb).
+                       ((cb == b) -> s4(d).s5(b).R(!b)
+                                  <> s5(!b).R(b));
+
+init
+  allow({cgen,s4,c2,c3,c5,c6,i},
+    comm({gen|rgen->cgen, r2|s2->c2, r3|s3->c3, r5|s5->c5, r6|s6->c6},
+      Source || S(true) || K || L || R(true)));
