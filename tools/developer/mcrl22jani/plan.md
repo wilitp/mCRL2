@@ -75,3 +75,19 @@ assignments to edges in order to either read or write, depending on the type of 
 operational semantics rules.
 
 ## Probabilistic choice
+
+Up until now, a process expression like `a . P`, where `P` is a process variable, produced one edge with action label `a` and one only possible destination.
+
+Now we introduce the last part of the mcrl2 language that this project encompases: the stochastic/probabilistic choice operator.
+
+With this addition, `P` in our example could possibly exhibit probabilistic behavior. In mcrl2, 
+probabilistic behavior is enabled by using the `dist d:D [f(d)] . p` syntax, which selects a value
+for variable `d` from domain `D` with probability `f(d)` and binds this value for every free ocurrence of variable `d` in `p`. This means that now, our example `a . P` could produce a transition with action label `a` that has more than one destination, depending on whether `P` exhibits the unguareded use of `dist` or not.
+
+The considered language is now:
+
+p :== a(d_1, .., d_n) | delta | p . q | p + q | P(d_1, ..., d_n) | c -> p <> q | sum d:D . p | dist d:D [f(d)] . p
+
+To implement this new operator, we need to understand the definitions leading to the definition of function `Stoch` in my thesis and implementing it correctly.
+
+Once `Stoch` is correctly implemented, wiring the destinations in produced edges should be a simple thing.

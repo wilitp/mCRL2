@@ -20,6 +20,7 @@
 #include "mcrl2/data/find.h"
 #include "mcrl2/data/replace.h"
 #include "mcrl2/data/substitutions/mutable_map_substitution.h"
+#include "mcrl2/data/substitutions/mutable_indexed_substitution.h"
 #include "mcrl2/data/substitutions/maintain_variables_in_rhs.h"
 #include "mcrl2/lps/io.h"
 #include "mcrl2/lps/linearise.h"
@@ -213,8 +214,14 @@ public:
     actionSet writingActions;
     std::map<std::string, std::set<std::string>> gamma;
 
+    // Data rewriter, used to enumerate the support {v | f(v) > 0} of a dist
+    // distribution and to evaluate the probabilities f(v) to normal form.
+    data::rewriter rewr;
+
     const string DELTA_LOCATION_NAME = "delta_state";
     const string TERMINATION_LOCATION_NAME = "termination";
+    const string INIT_LOCATION_NAME = "INIT";
+    const string INIT_ACTION_NAME = "init";
 
 
   json::object newState() {
@@ -291,34 +298,276 @@ public:
     return edge;
   }
 
-  // computes the `destinations` to put in a transition
-  // leading to process p
-  json::array stoch(process_expression p) {
-    // TODO: implement by structural recursion
-    // NOTE: this won't need
+  // ---- Stoch: the initial-state / action-successor distribution -------------------
+  // Stoch(p) ∈ Wxp is a symbolic distribution over (assignment-list, location) pairs
+  // (thesis def:stoch). It is the only source of probabilistic fan-out: it resolves
+  // every unguarded `dist` *before* the process behaves. A stoch_entry is one
+  // (as, loc, prob) triple. Assignments are kept TYPED here (not JSON) because the
+  // choice/conditional rule applies the *coinciding* assignments as a substitution into
+  // a process expression (l[restrict_{coin} as]); that needs the data::variable, which
+  // the JSON form has dropped. We convert to JSON only at the emission points.
+  struct typed_assignment {
+    data::variable var;          // mCRL2 variable, for substitution into sub-locations
+    data::data_expression value; // its value, for that substitution
+    int index;                   // assignment index (thesis ordering)
+    string ref;                  // JANI variable name (for JSON emission)
+    json::value jsonValue;       // pre-converted value (for JSON emission)
+  };
+  struct stoch_entry {
+    vector<typed_assignment> as;
+    abstract_location loc;
+    data::data_expression prob;
+  };
 
-    if (is_action(p)){
-
-    } else if(is_delta(p)) {
-
-    } else if (is_stochastic_operator(p)) {
-      
-    } else if (is_seq(p)) {
-
-    } else if (is_choice(p)) {
-
-    } else if (is_if_then(p)) {
-
-    } else if (is_if_then(p)) {
-
-    } else if (is_sum(p)) {
-
-    } else if (is_process_instance(p)) {
-
-    } else {
-      throw jani_translation_error(
-        "Expression " + pp(p) + " not supported by Stoch");
+  int typed_max_index(const vector<typed_assignment>& as) {
+    int m = -1;
+    for (const auto& a : as) { if (a.index > m) { m = a.index; } }
+    return m;
+  }
+  int typed_min_index(const vector<typed_assignment>& as) {
+    int m = INT_MAX;
+    for (const auto& a : as) { if (a.index < m) { m = a.index; } }
+    return m;
+  }
+  // coin(as1, as2): JANI variables assigned by both lists (by ref name).
+  set<string> typed_coin(const vector<typed_assignment>& as1, const vector<typed_assignment>& as2) {
+    set<string> refs1;
+    set<string> common;
+    for (const auto& a : as1) { refs1.insert(a.ref); }
+    for (const auto& a : as2) { if (refs1.contains(a.ref)) { common.insert(a.ref); } }
+    return common;
+  }
+  // restrict as to the assignments whose ref is in `refs`.
+  vector<typed_assignment> typed_restrict(const vector<typed_assignment>& as, const set<string>& refs) {
+    vector<typed_assignment> r;
+    for (const auto& a : as) { if (refs.contains(a.ref)) { r.push_back(a); } }
+    return r;
+  }
+  // as1 ⧺* as2 (iconcat): concat, shifting as2 above as1 and dropping coin vars.
+  vector<typed_assignment> typed_iconcat(const vector<typed_assignment>& as1, const vector<typed_assignment>& as2) {
+    set<string> common = typed_coin(as1, as2);
+    int shift = typed_max_index(as1) + 1;
+    vector<typed_assignment> r = as1;
+    for (auto a : as2) {
+      if (common.contains(a.ref)) { continue; }
+      a.index += shift;
+      r.push_back(a);
     }
+    return r;
+  }
+  // as1 ++_* as2 (iiconcat): shift as1 below as2 and drop coin vars.
+  vector<typed_assignment> typed_iiconcat(const vector<typed_assignment>& as1, const vector<typed_assignment>& as2) {
+    set<string> common = typed_coin(as1, as2);
+    int shift = -typed_max_index(as1) - typed_min_index(as2) - 1;
+    vector<typed_assignment> r;
+    for (auto a : as1) {
+      if (common.contains(a.ref)) { continue; }
+      a.index += shift;
+      r.push_back(a);
+    }
+    for (const auto& a : as2) { r.push_back(a); }
+    return r;
+  }
+  // Convert a typed assignment list to the JANI edge-assignment JSON form.
+  json::array toJsonAssignments(const vector<typed_assignment>& as) {
+    json::array result;
+    for (const auto& a : as) {
+      result.push_back(json::object{{"ref", a.ref}, {"value", a.jsonValue}, {"index", a.index}});
+    }
+    return result;
+  }
+  // l[as]: apply the typed assignments as a substitution to the location's process
+  // expression (thesis as(l) = psub). Returns the resulting process expression.
+  process_expression substExpr(const abstract_location& loc, const vector<typed_assignment>& as) {
+    if (std::holds_alternative<termination_t>(loc)) {
+      return process::delta();
+    }
+    const process_location& pl = std::get<process_location>(loc);
+    data::mutable_map_substitution<> sigma;
+    for (const auto& a : as) { sigma[a.var] = a.value; }
+    return process::replace_variables(pl.expr, sigma);
+  }
+  symbol_map betaOf(const abstract_location& loc) {
+    if (std::holds_alternative<termination_t>(loc)) { return symbol_map{}; }
+    return std::get<process_location>(loc).beta;
+  }
+
+  // Evaluate a probability expression (rewriting to normal form) into a JANI expression.
+  // @cReal(num,den) is rendered as num/den by convert_data_expression.
+  json::value convert_prob(const data::data_expression& prob) {
+    return convert_data_expression(rewr(prob), symbol_map{});
+  }
+
+  // Enumerate the support {v | f(v) > 0} of a dist distribution f over variable d,
+  // returning each value v together with its (rewritten) probability f(v). Mirrors
+  // mCRL2's own explorer (lps/explorer.h): the *probability expression* f is the
+  // enumerator condition and a branch is rejected when it rewrites to real 0; with the
+  // binary Nat/Pos numerals this prunes the cofinite zero-tail, so finite-support
+  // distributions over infinite sorts (the loaded die over Nat) terminate. env resolves
+  // any non-d free variables of f before enumeration.
+  vector<pair<data::data_expression, data::data_expression>>
+  enumerate_distribution(const data::variable& d, const data::data_expression& f, const subst_env& env) {
+    data::data_expression fResolved = data::replace_variables(f, toSubst(env));
+    data::enumerator_identifier_generator id_gen;
+    const size_t MAX_ENUM = 100000;
+    data::enumerator_algorithm<> enumerator(rewr, spec.data(), rewr, id_gen, false, MAX_ENUM);
+    data::mutable_indexed_substitution<> sigma;
+    vector<pair<data::data_expression, data::data_expression>> result;
+    size_t processed = enumerator.enumerate<data::enumerator_list_element_with_substitution<>>(
+      data::variable_list({d}), fResolved, sigma,
+      [&](const data::enumerator_list_element_with_substitution<>& p) {
+        p.add_assignments(data::variable_list({d}), sigma, rewr);
+        result.push_back({sigma(d), p.expression()});
+        return false; // continue enumerating
+      },
+      [](const data::data_expression& x) { return x == data::sort_real::real_zero(); }
+    );
+    if (processed >= MAX_ENUM) {
+      throw jani_translation_error("Could not enumerate the support {v | f(v) > 0} of a dist over "
+        + pp(d.sort()) + " within " + to_string(MAX_ENUM) + " steps: its support may be unbounded, "
+        "or f may depend on a still-symbolic variable (e.g. a dist after an action whose probability "
+        "uses a process parameter).");
+    }
+    return result;
+  }
+
+  // Stoch(expr) under symbol map β and substitution env (typed assignments; see the
+  // struct comment above). `unfolding` rejects unguarded recursion through a process
+  // identifier (e.g. P = P + a), which would otherwise loop here.
+  vector<stoch_entry> stoch(const process_expression& expr, const symbol_map& beta,
+                            const subst_env& env, std::set<process_identifier> unfolding = {}) {
+    vector<stoch_entry> result;
+
+    // Stoch(a) = Stoch(δ) = { (([], ·), 1) } — a Dirac mass on the term itself.
+    if (is_action(expr) || is_delta(expr)) {
+      result.push_back({{}, makeLoc(expr, beta, {}), data::sort_real::real_one()});
+    }
+    // Stoch(dist d:D[f] p) = { (([(d:=v,0)], p), f(v)) | f(v) > 0 } — the fan-out.
+    else if (is_stochastic_operator(expr)) {
+      const stochastic_operator& dist = atermpp::down_cast<stochastic_operator>(expr);
+      if (dist.variables().size() != 1) {
+        throw jani_translation_error("Only single-variable dist is supported; got " + pp(expr) + ".");
+      }
+      const data::variable& d = dist.variables().front();
+      // "dist_"-prefixed JANI variable so the bound var never clashes with a parameter
+      // (<Process>_<param>), a sum var (sum_<v>) or a comm/record var (<action>[_r]_<i>).
+      const string janiName = "dist_" + pp(d.name());
+      symbol_map extendedBeta = beta;
+      extendedBeta[d] = janiName;
+      jani_variable_sorts[janiName] = d.sort();
+      for (const auto& [value, prob] : enumerate_distribution(d, dist.distribution(), env)) {
+        typed_assignment a{d, value, 0, janiName, convert_data_expression(value, symbol_map{})};
+        result.push_back({{a}, makeLoc(dist.operand(), extendedBeta, {}), prob});
+      }
+    }
+    // Stoch(p·q) = { ((as, l·q), q1) | ((as,l),q1) ∈ Stoch(p) } — append q to each loc.
+    else if (is_seq(expr)) {
+      const seq& sequence = atermpp::down_cast<seq>(expr);
+      for (auto& e : stoch(sequence.left(), beta, env, unfolding)) {
+        result.push_back({e.as, seqTarget(e.loc, sequence.right(), beta), e.prob});
+      }
+    }
+    // Stoch(p+q): cartesian product; coinciding assignments (same JANI var resolved by
+    // both branches) are dropped from the shared list by ⧺* and pushed into the
+    // sub-locations instead (l₁[restrict as] + l₂[restrict bs]).
+    else if (is_choice(expr)) {
+      const process::choice& ch = atermpp::down_cast<process::choice>(expr);
+      auto lefts = stoch(ch.left(), beta, env, unfolding);
+      auto rights = stoch(ch.right(), beta, env, unfolding);
+      for (const auto& le : lefts) {
+        for (const auto& re : rights) {
+          set<string> cv = typed_coin(le.as, re.as);
+          symbol_map mergedBeta = beta;
+          for (const auto& [v, n] : betaOf(le.loc)) { mergedBeta[v] = n; }
+          for (const auto& [v, n] : betaOf(re.loc)) { mergedBeta[v] = n; }
+          process_expression l = substExpr(le.loc, typed_restrict(le.as, cv));
+          process_expression r = substExpr(re.loc, typed_restrict(re.as, cv));
+          data::data_expression prob = rewr(data::sort_real::times(le.prob, re.prob));
+          result.push_back({typed_iconcat(le.as, re.as), makeLoc(process::choice(l, r), mergedBeta, {}), prob});
+        }
+      }
+    }
+    // Stoch(c→p) — else branch is δ (a single Dirac), so this is the product with δ:
+    // keep the guard, append nothing on the else side.
+    else if (is_if_then(expr)) {
+      const if_then& cond = atermpp::down_cast<if_then>(expr);
+      for (const auto& e : stoch(cond.then_case(), beta, env, unfolding)) {
+        symbol_map mergedBeta = beta;
+        for (const auto& [v, n] : betaOf(e.loc)) { mergedBeta[v] = n; }
+        result.push_back({e.as, makeLoc(if_then(cond.condition(), substExpr(e.loc, {})), mergedBeta, {}), e.prob});
+      }
+    }
+    // Stoch(c→p◇q): like + but the guard c is kept around the combined location.
+    else if (is_if_then_else(expr)) {
+      const if_then_else& cond = atermpp::down_cast<if_then_else>(expr);
+      auto lefts = stoch(cond.then_case(), beta, env, unfolding);
+      auto rights = stoch(cond.else_case(), beta, env, unfolding);
+      for (const auto& le : lefts) {
+        for (const auto& re : rights) {
+          set<string> cv = typed_coin(le.as, re.as);
+          symbol_map mergedBeta = beta;
+          for (const auto& [v, n] : betaOf(le.loc)) { mergedBeta[v] = n; }
+          for (const auto& [v, n] : betaOf(re.loc)) { mergedBeta[v] = n; }
+          process_expression l = substExpr(le.loc, typed_restrict(le.as, cv));
+          process_expression r = substExpr(re.loc, typed_restrict(re.as, cv));
+          data::data_expression prob = rewr(data::sort_real::times(le.prob, re.prob));
+          result.push_back({typed_iconcat(le.as, re.as),
+                            makeLoc(if_then_else(cond.condition(), l, r), mergedBeta, {}), prob});
+        }
+      }
+    }
+    // Stoch(Σ_{d:D} p) = { (([], p), 1) } — a single Dirac; the sum is NOT resolved
+    // probabilistically. An unguarded dist inside p would therefore be ignored, which is
+    // unsound — such a location (a dist as a head) is rejected when it is later explored.
+    else if (is_sum(expr)) {
+      const process::sum& sumExpr = atermpp::down_cast<process::sum>(expr);
+      symbol_map extendedBeta = beta;
+      for (const data::variable& v : sumExpr.variables()) {
+        string janiName = "sum_" + pp(v.name());
+        extendedBeta[v] = janiName;
+        jani_variable_sorts[janiName] = v.sort();
+      }
+      result.push_back({{}, makeLoc(sumExpr.operand(), extendedBeta, {}), data::sort_real::real_one()});
+    }
+    // Stoch(X(t⃗)) — the recursion rule: explore the body's Stoch under the merged β and
+    // the actuals (newEnv resolves the body's dist probabilities); the parameter
+    // assignments fold below each entry's list (++_*) so they run first and persist the
+    // parameters as JANI variables across the upcoming edge.
+    else if (is_process_instance(expr)) {
+      const process_instance& procInst = atermpp::down_cast<process_instance>(expr);
+      const process_identifier& id = procInst.identifier();
+      if (unfolding.contains(id)) {
+        throw jani_translation_error("Unguarded recursion through process " + pp(id) +
+          " (no action or dist before recursing); cannot resolve the initial distribution.");
+      }
+      unfolding.insert(id);
+      const process_equation& eqn = lookup_process_equation(id);
+      symbol_map betaP = makeBeta(id, eqn.formal_parameters());
+      symbol_map mergedBeta = beta;
+      for (const auto& [v, n] : betaP) { mergedBeta[v] = n; }
+      data::mutable_map_substitution<> envSubst = toSubst(env);
+      subst_env newEnv;
+      vector<typed_assignment> paramAs;
+      auto fit = eqn.formal_parameters().begin();
+      auto ait = procInst.actual_parameters().begin();
+      for (; fit != eqn.formal_parameters().end() && ait != procInst.actual_parameters().end(); ++fit, ++ait) {
+        newEnv[*fit] = data::replace_variables(*ait, envSubst);
+        jani_variable_sorts[betaP.at(*fit)] = fit->sort();
+        paramAs.push_back({*fit, *ait, 0, betaP.at(*fit), convert_data_expression(*ait, mergedBeta)});
+      }
+      // ⧺* (iconcat), not ++_*: the parameter assignments are the *move into* this
+      // instance, so they must run AFTER the action that led here (the outer sequence rule
+      // folds them above the action's record). They keep low indices among themselves so an
+      // outer instance's parameters still run before an inner one's.
+      for (auto& e : stoch(eqn.expression(), mergedBeta, newEnv, unfolding)) {
+        result.push_back({typed_iconcat(paramAs, e.as), e.loc, e.prob});
+      }
+    }
+    else {
+      throw jani_translation_error("Expression " + pp(expr) + " not supported by Stoch.");
+    }
+
+    return result;
   }
 
   // Helper function: Get maximum index from an assignment list
@@ -836,9 +1085,10 @@ public:
   public:
     pcrl_to_automaton_translator(process::process_specification spec, const process_instance& initial_process_call, string automatonName,
                                  const actionSet& readingActions, const actionSet& writingActions,
-                                 const std::map<std::string, std::set<std::string>>& gamma)
+                                 const std::map<std::string, std::set<std::string>>& gamma,
+                                 const data::rewriter& rewr)
     : initial_process_call(initial_process_call),
-      readingActions(readingActions), writingActions(writingActions), gamma(gamma)
+      readingActions(readingActions), writingActions(writingActions), gamma(gamma), rewr(rewr)
     {
       this->spec = spec;
 
@@ -902,7 +1152,12 @@ public:
       }
     }
 
-    using transition = pair<json::object /* edge */, abstract_location>;
+    // An edge together with the list of locations its destinations lead to. The edge
+    // already carries its full "destinations" array (one entry per target, in order);
+    // `targets[i]` is the location of destination i, to be enqueued for exploration.
+    // dist makes edges fan out to several weighted destinations; without dist there is
+    // exactly one target and the edge has a single (probability-1) destination.
+    using transition = pair<json::object /* edge */, vector<abstract_location>>;
 
     // Wraps a process expression with its symbol map (β) and substitution
     // environment (env) into a location. β and env are restricted to the *free*
@@ -1140,11 +1395,18 @@ public:
         const process::action& act = atermpp::down_cast<process::action>(expr);
         json::array assignments = iiconcat(pending, buildActionAssignments(act, beta));
         json::object edge = makeEdge(locationName(loc), TERMINATION_LOCATION_NAME, pp(act.label()), assignments);
-        result.push_back({edge, termination_t{}});
+        result.push_back({edge, vector<abstract_location>{termination_t{}}});
       }
       // (Delta)  δ : deadlock, no transitions.
       else if (is_delta(expr)) {
         // no successors
+      }
+      // A dist as a *location head* means an unguarded dist that Stoch did not resolve —
+      // only reachable as the operand of a Σ (Stoch(Σ p) is a Dirac that ignores the inner
+      // dist). The thesis excludes such processes (an unguarded dist inside a sum).
+      else if (is_stochastic_operator(expr)) {
+        throw jani_translation_error("Unguarded dist inside a sum is not supported (the "
+          "probabilistic experiment cannot be resolved before the summation): " + pp(expr) + ".");
       }
       // (Choice-L/R)
       else if (is_choice(expr)) {
@@ -1152,16 +1414,49 @@ public:
         result.splice(result.end(), reSource(successors(makeLoc(choiceExpr.left(), beta, env), unfolding, pending), locationName(loc)));
         result.splice(result.end(), reSource(successors(makeLoc(choiceExpr.right(), beta, env), unfolding, pending), locationName(loc)));
       }
-      // (Seq-1) p·q ──a──▶ p'·q   (Seq-2) p ──a──▶ ✓ ⟹ p·q ──a──▶ q
+      // (Seq-1) p·q ──a──▶ p'·q   (Seq-2) p ──a──▶ ✓ ⟹ p·q ──a──▶ Stoch(q)
       else if (is_seq(expr)) {
         const seq& sequence = atermpp::down_cast<seq>(expr);
         const process_expression& right = sequence.right();
 
-        for (auto& [edge, target] : successors(makeLoc(sequence.left(), beta, env), unfolding, pending)) {
-          abstract_location newTarget = seqTarget(target, right, beta);
+        for (auto& [edge, targets] : successors(makeLoc(sequence.left(), beta, env), unfolding, pending)) {
           edge["location"] = locationName(loc);
-          edge["destinations"].as_array()[0].as_object()["location"] = locationName(newTarget);
-          result.push_back({edge, newTarget});
+          if (targets.size() == 1 && std::holds_alternative<termination_t>(targets[0])) {
+            // (Seq-2) p terminated via this action ⟹ continue as Stoch(q): the action
+            // edge fans out over q's initial distribution. The action's own assignments
+            // (already on its single destination) are the `as`; each Stoch entry adds its
+            // `bs` via ⧺* (iconcat) and contributes a destination with its probability.
+            json::array baseAssignments =
+                edge["destinations"].as_array()[0].as_object()["assignments"].as_array();
+            auto entries = stoch(right, beta, {});
+            json::array destinations;
+            vector<abstract_location> newTargets;
+            for (const auto& e : entries) {
+              json::object dest;
+              dest["location"] = locationName(e.loc);
+              dest["assignments"] = iconcat(baseAssignments, toJsonAssignments(e.as));
+              // A single entry is a Dirac (probability 1): omit the field, as before.
+              if (entries.size() > 1) {
+                dest["probability"] = json::object{{"exp", convert_prob(e.prob)}};
+              }
+              destinations.push_back(dest);
+              newTargets.push_back(e.loc);
+            }
+            edge["destinations"] = destinations;
+            result.push_back({edge, newTargets});
+          }
+          else {
+            // (Seq-1) p moved to a non-terminal p' (possibly already fanned out): append q
+            // to each destination/target.
+            auto& dests = edge["destinations"].as_array();
+            vector<abstract_location> newTargets;
+            for (size_t i = 0; i < targets.size(); ++i) {
+              abstract_location newTarget = seqTarget(targets[i], right, beta);
+              dests[i].as_object()["location"] = locationName(newTarget);
+              newTargets.push_back(newTarget);
+            }
+            result.push_back({edge, newTargets});
+          }
         }
       }
       // (Cond1)  c -> p : guard p's transitions with c (deadlock when ¬c)
@@ -1254,36 +1549,66 @@ public:
     // so this is the only place where the automaton is mutated. Termination and
     // delta locations fall out naturally as discovered locations with no outgoing
     // edges. Returns the name of the initial location.
-    string translateProcessExpression(const abstract_location& initial) {
-      list<abstract_location> work_queue = {initial};
-      set<abstract_location> discovered = {initial};
-
-      collectVariables(initial);
-      addStateToAutomaton(json::object{{"name", locationName(initial)}});
-
+    // Work-list exploration from the given seed locations, committing every reachable
+    // location and edge to the automaton. successors is pure, so this is the only place
+    // the automaton is mutated. `discovered` already contains (and the automaton already
+    // has states for) the seeds.
+    void exploreFrom(list<abstract_location> work_queue, set<abstract_location> discovered) {
       while (!work_queue.empty()) {
         abstract_location s = work_queue.front();
         work_queue.pop_front();
 
-        for (auto& [edge, target] : successors(s)) {
+        for (auto& [edge, targets] : successors(s)) {
           addEdgeToAutomaton(edge);
-          if (!discovered.contains(target)) {
-            discovered.insert(target);
-            collectVariables(target);
-            addStateToAutomaton(json::object{{"name", locationName(target)}});
-            work_queue.push_back(target);
+          for (const auto& target : targets) {
+            if (!discovered.contains(target)) {
+              discovered.insert(target);
+              collectVariables(target);
+              addStateToAutomaton(json::object{{"name", locationName(target)}});
+              work_queue.push_back(target);
+            }
           }
         }
       }
-
-      return locationName(initial);
     }
 
     json::object translate(){
 
-      auto initialLocation = translateProcessExpression(makeLoc(initial_process_call, symbol_map{}));
+      // INIT --init--> Stoch(p₀): the initial distribution is resolved by a single `init`
+      // edge whose destinations are the entries of Stoch (thesis: INIT --init--> Stoch(p)).
+      // Each entry seeds the exploration. Without an unguarded dist Stoch is a single Dirac,
+      // so this degenerates to one plain (probability-1) destination.
+      auto entries = stoch(initial_process_call, symbol_map{}, subst_env{});
 
-      jani_automaton["initial-locations"] = json::array({initialLocation});
+      addStateToAutomaton(json::object{{"name", INIT_LOCATION_NAME}});
+
+      json::array initDestinations;
+      list<abstract_location> seeds;
+      set<abstract_location> discovered;
+      for (const auto& e : entries) {
+        json::object dest;
+        dest["location"] = locationName(e.loc);
+        dest["assignments"] = toJsonAssignments(e.as);
+        if (entries.size() > 1) {
+          dest["probability"] = json::object{{"exp", convert_prob(e.prob)}};
+        }
+        initDestinations.push_back(dest);
+        if (!discovered.contains(e.loc)) {
+          discovered.insert(e.loc);
+          collectVariables(e.loc);
+          addStateToAutomaton(json::object{{"name", locationName(e.loc)}});
+          seeds.push_back(e.loc);
+        }
+      }
+      addEdgeToAutomaton(json::object{
+        {"action", INIT_ACTION_NAME},
+        {"location", INIT_LOCATION_NAME},
+        {"destinations", initDestinations}
+      });
+
+      exploreFrom(seeds, discovered);
+
+      jani_automaton["initial-locations"] = json::array({INIT_LOCATION_NAME});
 
       // Declare the automaton-local variables discovered during exploration. Their
       // values are established by the outgoing-edge assignments of the instance
@@ -1592,6 +1917,17 @@ class syncs_matrix {
     return *this;
   }
 
+  // Appends the all-init synchronisation row: every automaton fires `initAction`
+  // simultaneously, resolving each operand's initial distribution together (thesis: the
+  // final all-init row). Added after the parallel operators are interpreted so it is not
+  // filtered by allow/block; degenerates to [init | init] for a single automaton.
+  void addInitRow(const string& initAction) {
+    if (matrix.empty()) { return; }
+    uint width = matrix[0].first.size();
+    vector<string> lhs(width, initAction);
+    matrix.push_back(make_pair(lhs, multiset<string>{initAction}));
+  }
+
 };
 
 
@@ -1602,6 +1938,8 @@ class jani_translator
   actionSet writingActions;
   // γ : Act_write → 𝒫(Act_read), computed by computeGamma from the final syncs matrix.
   map<string, set<string>> gamma;
+  // Shared data rewriter (jitty), handed to each automaton translator for dist enumeration.
+  data::rewriter rewr;
   map<process_identifier, uint> automatonCounters;
   // gets all process identifiers that are reachable from the initial process
   // for now assumed to be pcrl
@@ -1800,6 +2138,11 @@ class jani_translator
       set<data::variable> extended = inScopeReadVars;
       for (const data::variable& v : s.variables()) { extended.insert(v); sumVars.insert(v); }
       annotateRec(s.operand(), extended, consumed, sumVars, readBareVars);
+    } else if (is_stochastic_operator(expr)) {
+      // dist introduces a probabilistic (not read) variable; descend into its operand so
+      // actions there are still classified. The bound variable is not a read variable.
+      annotateRec(atermpp::down_cast<stochastic_operator>(expr).operand(),
+                  inScopeReadVars, consumed, sumVars, readBareVars);
     } else if (is_process_instance(expr)) {
       // a separate scope: read variables do not cross process boundaries.
     }
@@ -1856,7 +2199,7 @@ class jani_translator
     }
 
     pcrl_to_automaton_translator translator(spec, procInst, automatonName,
-                                            readingActions, writingActions, gamma);
+                                            readingActions, writingActions, gamma, rewr);
     auto automaton = translator.translate();
     return automaton;
   }
@@ -1920,8 +2263,8 @@ public:
   process::process_specification spec;
 
   // constructor
-  jani_translator(const process::process_specification& specification)
-    : spec(specification) {
+  jani_translator(const process::process_specification& specification, const data::rewriter& rewr)
+    : rewr(rewr), spec(specification) {
     }
 
   
@@ -1940,6 +2283,13 @@ public:
     syncsMatrix.checkSyncs(readingActions);
     computeGamma(syncsMatrix);
     addTransientVars();
+
+    // The `init` action wires INIT --init--> Stoch(p) in every automaton (see
+    // pcrl_to_automaton_translator::INIT_ACTION_NAME); the all-init sync row makes them
+    // resolve together. Added after checkSyncs/computeGamma so the synthetic row is not
+    // mistaken for a (multi-writer) communication row.
+    jani_actions.push_back(json::object{{"name", "init"}});
+    syncsMatrix.addInitRow("init");
 
     for (const auto& procInst : prclProcesses) {
       jani_system_elements.push_back(
@@ -2040,7 +2390,17 @@ public:
 
     // check that spec is linearisable
     // mcrl2::lps::stochastic_specification linear_spec(mcrl2::lps::linearise(spec, m_linearisation_options));
-    jani_translator translator(spec);
+
+    // Import the system-defined numeric sorts into the data specification so the rewriter
+    // has their arithmetic rules and the enumerator can find their constructors — needed
+    // to evaluate dist probabilities f(v) and to enumerate the support over e.g. Nat.
+    spec.data().add_context_sort(data::sort_real::real_());
+    spec.data().add_context_sort(data::sort_int::int_());
+    spec.data().add_context_sort(data::sort_nat::nat());
+    spec.data().add_context_sort(data::sort_pos::pos());
+
+    data::rewriter rewr = create_rewriter(spec.data());
+    jani_translator translator(spec, rewr);
 
 
     // cout << "Translating to JANI..." << endl;
