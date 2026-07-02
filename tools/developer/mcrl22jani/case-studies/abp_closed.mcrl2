@@ -7,7 +7,7 @@
 % model and exercises the thesis's sum-based read/write communication machinery
 % (Act_read / Act_write, gamma, transient comm vars, assignment indices).
 %
-% Three adaptations were needed w.r.t. the upstream model, each illustrating a
+% Four adaptations were needed w.r.t. the upstream model, each illustrating a
 % boundary of the supported subset:
 %
 %   1. FINITE DATA. The data domain `D = struct d1 | d2` is encoded as `Bool`.
@@ -27,31 +27,47 @@
 %      upper layer is therefore closed with an explicit `Source` that offers
 %      both data values as writes of constants, communicating with the sender
 %      via `gen | rgen -> cgen`. (A lone external *write* such as `s4` is fine.)
+%
+%   4. LOSSY CHANNELS WITHOUT SILENT DROP. The upstream channels deliver either
+%      the frame or an *error token* `s3(e)` / `s6(e)`; they never drop silently.
+%      That error keeps a message in flight (the receiver re-acks, the sender
+%      retransmits), which is what makes ABP deadlock-free. We keep that shape
+%      with a nullary *corrupted-frame* signal (`s3e` / `s6e`) instead of an
+%      error sort. Modelling loss as a plain silent drop (`i.s3(d,b) + i`) breaks
+%      ABP's liveness: the sender waits forever for an ack that never comes — a
+%      reachable deadlock (confirmed with `mcsta --nofixdl`), faithfully carried
+%      through by the translation.
 % ============================================================================
 
 act
   gen,rgen,cgen: Bool;      % upper layer -> sender (closes the open input)
   s4: Bool;                 % delivered datum (lone external output)
-  s2,r2,c2: Bool # Bool;
-  s3,r3,c3: Bool # Bool;
-  s5,r5,c5: Bool;
-  s6,r6,c6: Bool;
+  s2,r2,c2: Bool # Bool;    % sender -> channel K  (data # bit)
+  s3,r3,c3: Bool # Bool;    % channel K -> receiver
+  s3e,r3e,c3e;              % channel K delivers a corrupted frame (no data)
+  s5,r5,c5: Bool;           % receiver -> channel L (ack bit)
+  s6,r6,c6: Bool;           % channel L -> sender
+  s6e,r6e,c6e;              % channel L delivers a corrupted ack (no data)
   i;
 
 proc
   Source           = gen(true).Source + gen(false).Source;
 
   S(b:Bool)        = sum d:Bool. rgen(d).T(d,b);
-  T(d:Bool,b:Bool) = s2(d,b).(sum ab:Bool. r6(ab).((ab == b) -> S(!b) <> T(d,b)));
+  T(d:Bool,b:Bool) = s2(d,b).
+      ( sum ab:Bool. r6(ab).((ab == b) -> S(!b) <> T(d,b))   % ack: match=>advance, else resend
+      + r6e.T(d,b) );                                        % corrupted ack => resend
 
-  K                = sum d:Bool,b:Bool. r2(d,b).(i.s3(d,b) + i).K;
-  L                = sum b:Bool.        r5(b).(i.s6(b) + i).L;
+  K                = sum d:Bool,b:Bool. r2(d,b).(i.s3(d,b) + i.s3e).K;   % forward or corrupt
+  L                = sum b:Bool.        r5(b).(i.s6(b) + i.s6e).L;       % forward or corrupt
 
   R(b:Bool)        = sum d:Bool, cb:Bool. r3(d,cb).
                        ((cb == b) -> s4(d).s5(b).R(!b)
-                                  <> s5(!b).R(b));
+                                  <> s5(!b).R(b))
+                   + r3e.s5(!b).R(b);                        % corrupted frame => re-ack old bit
 
 init
-  allow({cgen,s4,c2,c3,c5,c6,i},
-    comm({gen|rgen->cgen, r2|s2->c2, r3|s3->c3, r5|s5->c5, r6|s6->c6},
+  allow({cgen,s4,c2,c3,c3e,c5,c6,c6e,i},
+    comm({gen|rgen->cgen, r2|s2->c2, r3|s3->c3, r3e|s3e->c3e,
+          r5|s5->c5, r6|s6->c6, r6e|s6e->c6e},
       Source || S(true) || K || L || R(true)));
