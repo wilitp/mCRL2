@@ -1,0 +1,12 @@
+% Emax(<> stable) for the ADAPTED (per-link) self-stabilisation spec, N=3 (gives 7.0,
+% matching the data-comm native run -> validates the adapted-spec property).
+mu X(t0:Bool=true, t1:Bool=true, t2:Bool=true).
+     val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)) == 1 ) && val(0)
+  || val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)) != 1 )
+     && ( val(1) + (
+             <c01> X(false, true,  t2   )
+          || <c12> X(t0,    false, true )
+          || <c20> X(true,  t1,    false)
+          || <c02> X(false, t1,    true )
+          || <c10> X(true,  false, t2   )
+          || <c21> X(t0,    true,  false) ) )

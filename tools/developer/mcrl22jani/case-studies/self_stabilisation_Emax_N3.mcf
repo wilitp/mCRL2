@@ -1,0 +1,7 @@
+mu X(t0:Bool=true, t1:Bool=true, t2:Bool=true).
+     val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)) == 1 ) && val(0)
+  || val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)) != 1 )
+     && ( val(1) + sup i,j:Nat. <comm_token(i,j)> X(
+            if(j==0,true,if(i==0,false,t0)),
+            if(j==1,true,if(i==1,false,t1)),
+            if(j==2,true,if(i==2,false,t2)) ) )

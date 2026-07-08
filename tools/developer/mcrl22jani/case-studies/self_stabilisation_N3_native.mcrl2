@@ -1,0 +1,17 @@
+% Israeli-Jalfon self-stabilisation, ring of 3, ORIGINAL data-carrying-comm style
+% (same shape as examples/probabilistic/self_stabilisation/self_stabilisation.mcrl2,
+% reduced to N=3).  Used for the mCRL2-NATIVE verification route
+% (mcrl22lps -> lps2pres -> pressolve) with property self_stabilisation_Emax_N3.mcf,
+% i.e. WITHOUT translating to JANI.  Routing is by comm data-matching
+% (send_token(id,dest) | read_token(dest,id) -> comm_token), which is exactly the
+% construct that cannot be translated to label-synchronising JANI (hence the adapted
+% per-link spec self_stabilisation_N3.mcrl2 for the translate route).
+act send_token:Int#Int; read_token:Int#Int; comm_token:Int#Int;
+proc P(id:Int, token:Bool, prev:Int, next:Int)=
+     (token==true)->( dist b:Bool[1/2].
+         b-> send_token(id,next).P(id,false,prev,next)
+         <>  send_token(id,prev).P(id,false,prev,next) )
+   + read_token(next,id).P(id,true,prev,next)
+   + read_token(prev,id).P(id,true,prev,next);
+init allow({comm_token}, comm({send_token|read_token->comm_token},
+       P(0,true,2,1)||P(1,true,0,2)||P(2,true,1,0) ));

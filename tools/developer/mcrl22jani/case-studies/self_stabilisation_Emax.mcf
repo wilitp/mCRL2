@@ -1,0 +1,39 @@
+% ===========================================================================
+% Emax: worst-case expected number of token-passing (comm_token) steps until
+% the ring self-stabilises to exactly one token.
+%
+% Target model: examples/probabilistic/self_stabilisation/self_stabilisation.mcrl2
+% (the ORIGINAL, unmodified Israeli-Jalfon example, data-carrying comm_token).
+%
+% This is mCRL2's own quantitative (real-valued) modal mu-calculus, evaluated
+% over the probabilistic LPS -- so it stays on mCRL2's native stochastic
+% semantics and needs no JANI/mcrl22jani step.  Run it with:
+%
+%     mcrl22lps self_stabilisation.mcrl2 ss.lps
+%     lps2pres -f self_stabilisation_Emax.mcf ss.lps ss.pres
+%     pressolve -a m -rjittyc -Q6 ss.pres          # -a m = numerical (required)
+%
+% How it works:
+%   * The token configuration is carried in the fixpoint params t0..t4
+%     (init all-true = every process holds a token).
+%   * stable  <=>  #tokens == 1.  Reaching it contributes 0 further steps.
+%   * Each comm_token(i,j) moves a token i->j (t_i:=false, t_j:=true; a MERGE is
+%     exactly t_j collapsing two trues to one), and costs val(1).
+%   * sup i,j + <comm_token(i,j)>  =  maximising (worst-case) scheduler.
+%
+% NOTE ON THE +1: this counts ONLY comm_token steps.  The JANI produced by
+% mcrl22jani additionally counts its one-off INIT --> Stoch resolution edge, so
+% the JANI Emax is this value + 1.
+%
+% Validated: N=3 variant gives Emax = 7 (stable to 1e-9).  N=5 parses/instantiates
+% but pressolve's numerical iteration is very slow to converge on the full model.
+% ===========================================================================
+mu X(t0:Bool=true, t1:Bool=true, t2:Bool=true, t3:Bool=true, t4:Bool=true).
+     val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)+if(t3,1,0)+if(t4,1,0)) == 1 ) && val(0)
+  || val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)+if(t3,1,0)+if(t4,1,0)) != 1 )
+     && ( val(1) + sup i,j:Nat. <comm_token(i,j)> X(
+            if(j==0,true,if(i==0,false,t0)),
+            if(j==1,true,if(i==1,false,t1)),
+            if(j==2,true,if(i==2,false,t2)),
+            if(j==3,true,if(i==3,false,t3)),
+            if(j==4,true,if(i==4,false,t4)) ) )

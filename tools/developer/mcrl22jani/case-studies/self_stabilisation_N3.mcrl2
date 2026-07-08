@@ -1,0 +1,20 @@
+% Israeli-Jalfon self-stabilisation on a ring of 3, adapted for mcrl22jani
+% exactly like the N=5 case study: each directed ring link u->v gets its own
+% label-routed channel  s_uv | r_uv -> c_uv  (no data-matching comm).
+act
+  s01,r01,c01, s12,r12,c12, s20,r20,c20,   % forward  i -> i+1 (mod 3)
+  s02,r02,c02, s10,r10,c10, s21,r21,c21;   % backward i -> i-1 (mod 3)
+
+proc
+  P0(token:Bool) = token -> (dist b:Bool[1/2]. b -> s01.P0(false) <> s02.P0(false))
+                 + r20.P0(true) + r10.P0(true);
+  P1(token:Bool) = token -> (dist b:Bool[1/2]. b -> s12.P1(false) <> s10.P1(false))
+                 + r01.P1(true) + r21.P1(true);
+  P2(token:Bool) = token -> (dist b:Bool[1/2]. b -> s20.P2(false) <> s21.P2(false))
+                 + r12.P2(true) + r02.P2(true);
+
+init
+  allow({c01,c12,c20,c02,c10,c21},
+    comm({s01|r01->c01, s12|r12->c12, s20|r20->c20,
+          s02|r02->c02, s10|r10->c10, s21|r21->c21},
+      P0(true)||P1(true)||P2(true)));

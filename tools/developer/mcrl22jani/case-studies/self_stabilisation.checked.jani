@@ -1,0 +1,2032 @@
+{
+ "name": "mCRL2_to_JANI_model",
+ "type": "mdp",
+ "jani-version": 1,
+ "variables": [
+  {
+   "name": "P0_token",
+   "type": "bool",
+   "initial-value": true,
+   "transient": false
+  },
+  {
+   "name": "P1_token",
+   "type": "bool",
+   "initial-value": true,
+   "transient": false
+  },
+  {
+   "name": "P2_token",
+   "type": "bool",
+   "initial-value": true,
+   "transient": false
+  },
+  {
+   "name": "P3_token",
+   "type": "bool",
+   "initial-value": true,
+   "transient": false
+  },
+  {
+   "name": "P4_token",
+   "type": "bool",
+   "initial-value": true,
+   "transient": false
+  }
+ ],
+ "automata": [
+  {
+   "name": "P0",
+   "locations": [
+    {
+     "name": "INIT"
+    },
+    {
+     "name": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)"
+    }
+   ],
+   "edges": [
+    {
+     "action": "init",
+     "location": "INIT",
+     "destinations": [
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "s01",
+     "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+     "destinations": [
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": "dist_b",
+       "right": "P0_token"
+      }
+     }
+    },
+    {
+     "action": "s04",
+     "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+     "destinations": [
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": {
+        "op": "\u00ac",
+        "exp": "dist_b"
+       },
+       "right": "P0_token"
+      }
+     }
+    },
+    {
+     "action": "r40",
+     "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+     "destinations": [
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "r10",
+     "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+     "destinations": [
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P0_token -> dist_b -> s01 . P0(false) <> s04 . P0(false) + r40 . P0(true) + r10 . P0(true)",
+       "assignments": [
+        {
+         "ref": "P0_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    }
+   ],
+   "initial-locations": [
+    "INIT"
+   ],
+   "variables": [
+    {
+     "name": "dist_b",
+     "type": "bool",
+     "initial-value": false
+    }
+   ]
+  },
+  {
+   "name": "P1",
+   "locations": [
+    {
+     "name": "INIT"
+    },
+    {
+     "name": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)"
+    }
+   ],
+   "edges": [
+    {
+     "action": "init",
+     "location": "INIT",
+     "destinations": [
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "s12",
+     "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+     "destinations": [
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": "dist_b",
+       "right": "P1_token"
+      }
+     }
+    },
+    {
+     "action": "s10",
+     "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+     "destinations": [
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": {
+        "op": "\u00ac",
+        "exp": "dist_b"
+       },
+       "right": "P1_token"
+      }
+     }
+    },
+    {
+     "action": "r01",
+     "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+     "destinations": [
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "r21",
+     "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+     "destinations": [
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P1_token -> dist_b -> s12 . P1(false) <> s10 . P1(false) + r01 . P1(true) + r21 . P1(true)",
+       "assignments": [
+        {
+         "ref": "P1_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    }
+   ],
+   "initial-locations": [
+    "INIT"
+   ],
+   "variables": [
+    {
+     "name": "dist_b",
+     "type": "bool",
+     "initial-value": false
+    }
+   ]
+  },
+  {
+   "name": "P2",
+   "locations": [
+    {
+     "name": "INIT"
+    },
+    {
+     "name": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)"
+    }
+   ],
+   "edges": [
+    {
+     "action": "init",
+     "location": "INIT",
+     "destinations": [
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "s23",
+     "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+     "destinations": [
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": "dist_b",
+       "right": "P2_token"
+      }
+     }
+    },
+    {
+     "action": "s21",
+     "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+     "destinations": [
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": {
+        "op": "\u00ac",
+        "exp": "dist_b"
+       },
+       "right": "P2_token"
+      }
+     }
+    },
+    {
+     "action": "r12",
+     "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+     "destinations": [
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "r32",
+     "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+     "destinations": [
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P2_token -> dist_b -> s23 . P2(false) <> s21 . P2(false) + r12 . P2(true) + r32 . P2(true)",
+       "assignments": [
+        {
+         "ref": "P2_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    }
+   ],
+   "initial-locations": [
+    "INIT"
+   ],
+   "variables": [
+    {
+     "name": "dist_b",
+     "type": "bool",
+     "initial-value": false
+    }
+   ]
+  },
+  {
+   "name": "P3",
+   "locations": [
+    {
+     "name": "INIT"
+    },
+    {
+     "name": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)"
+    }
+   ],
+   "edges": [
+    {
+     "action": "init",
+     "location": "INIT",
+     "destinations": [
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "s34",
+     "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+     "destinations": [
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": "dist_b",
+       "right": "P3_token"
+      }
+     }
+    },
+    {
+     "action": "s32",
+     "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+     "destinations": [
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": {
+        "op": "\u00ac",
+        "exp": "dist_b"
+       },
+       "right": "P3_token"
+      }
+     }
+    },
+    {
+     "action": "r23",
+     "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+     "destinations": [
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "r43",
+     "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+     "destinations": [
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P3_token -> dist_b -> s34 . P3(false) <> s32 . P3(false) + r23 . P3(true) + r43 . P3(true)",
+       "assignments": [
+        {
+         "ref": "P3_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    }
+   ],
+   "initial-locations": [
+    "INIT"
+   ],
+   "variables": [
+    {
+     "name": "dist_b",
+     "type": "bool",
+     "initial-value": false
+    }
+   ]
+  },
+  {
+   "name": "P4",
+   "locations": [
+    {
+     "name": "INIT"
+    },
+    {
+     "name": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)"
+    }
+   ],
+   "edges": [
+    {
+     "action": "init",
+     "location": "INIT",
+     "destinations": [
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "s40",
+     "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+     "destinations": [
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": "dist_b",
+       "right": "P4_token"
+      }
+     }
+    },
+    {
+     "action": "s43",
+     "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+     "destinations": [
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": false,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ],
+     "guard": {
+      "exp": {
+       "op": "\u2227",
+       "left": {
+        "op": "\u00ac",
+        "exp": "dist_b"
+       },
+       "right": "P4_token"
+      }
+     }
+    },
+    {
+     "action": "r34",
+     "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+     "destinations": [
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    },
+    {
+     "action": "r04",
+     "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+     "destinations": [
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": true,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      },
+      {
+       "location": "P4_token -> dist_b -> s40 . P4(false) <> s43 . P4(false) + r34 . P4(true) + r04 . P4(true)",
+       "assignments": [
+        {
+         "ref": "P4_token",
+         "value": true,
+         "index": 0
+        },
+        {
+         "ref": "dist_b",
+         "value": false,
+         "index": 1
+        }
+       ],
+       "probability": {
+        "exp": {
+         "left": 1,
+         "op": "/",
+         "right": 2
+        }
+       }
+      }
+     ]
+    }
+   ],
+   "initial-locations": [
+    "INIT"
+   ],
+   "variables": [
+    {
+     "name": "dist_b",
+     "type": "bool",
+     "initial-value": false
+    }
+   ]
+  }
+ ],
+ "actions": [
+  {
+   "name": "s01"
+  },
+  {
+   "name": "r01"
+  },
+  {
+   "name": "c01"
+  },
+  {
+   "name": "s12"
+  },
+  {
+   "name": "r12"
+  },
+  {
+   "name": "c12"
+  },
+  {
+   "name": "s23"
+  },
+  {
+   "name": "r23"
+  },
+  {
+   "name": "c23"
+  },
+  {
+   "name": "s34"
+  },
+  {
+   "name": "r34"
+  },
+  {
+   "name": "c34"
+  },
+  {
+   "name": "s40"
+  },
+  {
+   "name": "r40"
+  },
+  {
+   "name": "c40"
+  },
+  {
+   "name": "s10"
+  },
+  {
+   "name": "r10"
+  },
+  {
+   "name": "c10"
+  },
+  {
+   "name": "s21"
+  },
+  {
+   "name": "r21"
+  },
+  {
+   "name": "c21"
+  },
+  {
+   "name": "s32"
+  },
+  {
+   "name": "r32"
+  },
+  {
+   "name": "c32"
+  },
+  {
+   "name": "s43"
+  },
+  {
+   "name": "r43"
+  },
+  {
+   "name": "c43"
+  },
+  {
+   "name": "s04"
+  },
+  {
+   "name": "r04"
+  },
+  {
+   "name": "c04"
+  },
+  {
+   "name": "init"
+  }
+ ],
+ "system": {
+  "elements": [
+   {
+    "automaton": "P0"
+   },
+   {
+    "automaton": "P1"
+   },
+   {
+    "automaton": "P2"
+   },
+   {
+    "automaton": "P3"
+   },
+   {
+    "automaton": "P4"
+   }
+  ],
+  "syncs": [
+   {
+    "synchronise": [
+     null,
+     null,
+     null,
+     "s34",
+     "r34"
+    ],
+    "result": "c34"
+   },
+   {
+    "synchronise": [
+     null,
+     null,
+     null,
+     "r43",
+     "s43"
+    ],
+    "result": "c43"
+   },
+   {
+    "synchronise": [
+     null,
+     null,
+     "s23",
+     "r23",
+     null
+    ],
+    "result": "c23"
+   },
+   {
+    "synchronise": [
+     null,
+     null,
+     "r32",
+     "s32",
+     null
+    ],
+    "result": "c32"
+   },
+   {
+    "synchronise": [
+     null,
+     "s12",
+     "r12",
+     null,
+     null
+    ],
+    "result": "c12"
+   },
+   {
+    "synchronise": [
+     null,
+     "r21",
+     "s21",
+     null,
+     null
+    ],
+    "result": "c21"
+   },
+   {
+    "synchronise": [
+     "s01",
+     "r01",
+     null,
+     null,
+     null
+    ],
+    "result": "c01"
+   },
+   {
+    "synchronise": [
+     "r10",
+     "s10",
+     null,
+     null,
+     null
+    ],
+    "result": "c10"
+   },
+   {
+    "synchronise": [
+     "r40",
+     null,
+     null,
+     null,
+     "s40"
+    ],
+    "result": "c40"
+   },
+   {
+    "synchronise": [
+     "s04",
+     null,
+     null,
+     null,
+     "r04"
+    ],
+    "result": "c04"
+   },
+   {
+    "synchronise": [
+     "init",
+     "init",
+     "init",
+     "init",
+     "init"
+    ],
+    "result": "init"
+   }
+  ]
+ },
+ "properties": [
+  {
+   "name": "P1_tokens_vanish",
+   "expression": {
+    "op": "filter",
+    "fun": "max",
+    "states": {
+     "op": "initial"
+    },
+    "values": {
+     "op": "Pmax",
+     "exp": {
+      "op": "U",
+      "left": true,
+      "right": {
+       "op": "=",
+       "left": {
+        "op": "+",
+        "left": {
+         "op": "+",
+         "left": {
+          "op": "+",
+          "left": {
+           "op": "+",
+           "left": {
+            "op": "ite",
+            "if": "P0_token",
+            "then": 1,
+            "else": 0
+           },
+           "right": {
+            "op": "ite",
+            "if": "P1_token",
+            "then": 1,
+            "else": 0
+           }
+          },
+          "right": {
+           "op": "ite",
+           "if": "P2_token",
+           "then": 1,
+           "else": 0
+          }
+         },
+         "right": {
+          "op": "ite",
+          "if": "P3_token",
+          "then": 1,
+          "else": 0
+         }
+        },
+        "right": {
+         "op": "ite",
+         "if": "P4_token",
+         "then": 1,
+         "else": 0
+        }
+       },
+       "right": 0
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "P2_tokens_grow",
+   "expression": {
+    "op": "filter",
+    "fun": "max",
+    "states": {
+     "op": "initial"
+    },
+    "values": {
+     "op": "Pmax",
+     "exp": {
+      "op": "U",
+      "left": true,
+      "right": {
+       "op": ">",
+       "left": {
+        "op": "+",
+        "left": {
+         "op": "+",
+         "left": {
+          "op": "+",
+          "left": {
+           "op": "+",
+           "left": {
+            "op": "ite",
+            "if": "P0_token",
+            "then": 1,
+            "else": 0
+           },
+           "right": {
+            "op": "ite",
+            "if": "P1_token",
+            "then": 1,
+            "else": 0
+           }
+          },
+          "right": {
+           "op": "ite",
+           "if": "P2_token",
+           "then": 1,
+           "else": 0
+          }
+         },
+         "right": {
+          "op": "ite",
+          "if": "P3_token",
+          "then": 1,
+          "else": 0
+         }
+        },
+        "right": {
+         "op": "ite",
+         "if": "P4_token",
+         "then": 1,
+         "else": 0
+        }
+       },
+       "right": 5
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "P3_self_stabilises",
+   "expression": {
+    "op": "filter",
+    "fun": "min",
+    "states": {
+     "op": "initial"
+    },
+    "values": {
+     "op": "Pmin",
+     "exp": {
+      "op": "U",
+      "left": true,
+      "right": {
+       "op": "=",
+       "left": {
+        "op": "+",
+        "left": {
+         "op": "+",
+         "left": {
+          "op": "+",
+          "left": {
+           "op": "+",
+           "left": {
+            "op": "ite",
+            "if": "P0_token",
+            "then": 1,
+            "else": 0
+           },
+           "right": {
+            "op": "ite",
+            "if": "P1_token",
+            "then": 1,
+            "else": 0
+           }
+          },
+          "right": {
+           "op": "ite",
+           "if": "P2_token",
+           "then": 1,
+           "else": 0
+          }
+         },
+         "right": {
+          "op": "ite",
+          "if": "P3_token",
+          "then": 1,
+          "else": 0
+         }
+        },
+        "right": {
+         "op": "ite",
+         "if": "P4_token",
+         "then": 1,
+         "else": 0
+        }
+       },
+       "right": 1
+      }
+     }
+    }
+   }
+  },
+  {
+   "name": "P4_exp_steps_max",
+   "expression": {
+    "op": "filter",
+    "fun": "max",
+    "states": {
+     "op": "initial"
+    },
+    "values": {
+     "op": "Emax",
+     "exp": 1,
+     "accumulate": [
+      "steps"
+     ],
+     "reach": {
+      "op": "=",
+      "left": {
+       "op": "+",
+       "left": {
+        "op": "+",
+        "left": {
+         "op": "+",
+         "left": {
+          "op": "+",
+          "left": {
+           "op": "ite",
+           "if": "P0_token",
+           "then": 1,
+           "else": 0
+          },
+          "right": {
+           "op": "ite",
+           "if": "P1_token",
+           "then": 1,
+           "else": 0
+          }
+         },
+         "right": {
+          "op": "ite",
+          "if": "P2_token",
+          "then": 1,
+          "else": 0
+         }
+        },
+        "right": {
+         "op": "ite",
+         "if": "P3_token",
+         "then": 1,
+         "else": 0
+        }
+       },
+       "right": {
+        "op": "ite",
+        "if": "P4_token",
+        "then": 1,
+        "else": 0
+       }
+      },
+      "right": 1
+     }
+    }
+   }
+  },
+  {
+   "name": "P5_exp_steps_min",
+   "expression": {
+    "op": "filter",
+    "fun": "min",
+    "states": {
+     "op": "initial"
+    },
+    "values": {
+     "op": "Emin",
+     "exp": 1,
+     "accumulate": [
+      "steps"
+     ],
+     "reach": {
+      "op": "=",
+      "left": {
+       "op": "+",
+       "left": {
+        "op": "+",
+        "left": {
+         "op": "+",
+         "left": {
+          "op": "+",
+          "left": {
+           "op": "ite",
+           "if": "P0_token",
+           "then": 1,
+           "else": 0
+          },
+          "right": {
+           "op": "ite",
+           "if": "P1_token",
+           "then": 1,
+           "else": 0
+          }
+         },
+         "right": {
+          "op": "ite",
+          "if": "P2_token",
+          "then": 1,
+          "else": 0
+         }
+        },
+        "right": {
+         "op": "ite",
+         "if": "P3_token",
+         "then": 1,
+         "else": 0
+        }
+       },
+       "right": {
+        "op": "ite",
+        "if": "P4_token",
+        "then": 1,
+        "else": 0
+       }
+      },
+      "right": 1
+     }
+    }
+   }
+  }
+ ]
+}

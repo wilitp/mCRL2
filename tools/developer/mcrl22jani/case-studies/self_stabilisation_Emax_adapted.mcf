@@ -1,0 +1,18 @@
+% Emax(<> stable) for the ADAPTED (per-link) self-stabilisation spec, N=5.
+% Nullary channels c_uv (token moves u->v): explicit 10-way max-disjunction over
+% <c_uv>, no data quantifier. Native route (lps2pres/pressolve) on self_stabilisation.mcrl2.
+% Used as the control that the native-vs-Modest gap is the TOOLCHAIN, not the adaptation.
+mu X(t0:Bool=true, t1:Bool=true, t2:Bool=true, t3:Bool=true, t4:Bool=true).
+     val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)+if(t3,1,0)+if(t4,1,0)) == 1 ) && val(0)
+  || val( (if(t0,1,0)+if(t1,1,0)+if(t2,1,0)+if(t3,1,0)+if(t4,1,0)) != 1 )
+     && ( val(1) + (
+             <c01> X(false, true,  t2,    t3,    t4   )
+          || <c12> X(t0,    false, true,  t3,    t4   )
+          || <c23> X(t0,    t1,    false, true,  t4   )
+          || <c34> X(t0,    t1,    t2,    false, true )
+          || <c40> X(true,  t1,    t2,    t3,    false)
+          || <c10> X(true,  false, t2,    t3,    t4   )
+          || <c21> X(t0,    true,  false, t3,    t4   )
+          || <c32> X(t0,    t1,    true,  false, t4   )
+          || <c43> X(t0,    t1,    t2,    true,  false)
+          || <c04> X(false, t1,    t2,    t3,    true ) ) )

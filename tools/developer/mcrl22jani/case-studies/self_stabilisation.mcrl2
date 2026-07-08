@@ -1,0 +1,53 @@
+% ============================================================================
+% Case study (probabilistic): Israeli-Jalfon self-stabilisation on a ring of 5.
+% ----------------------------------------------------------------------------
+% Adapted from examples/probabilistic/self_stabilisation/self_stabilisation.mcrl2
+% (taken from the PRISM Benchmark Suite; Israeli & Jalfon, "Token management
+% schemes and random walks yield self-stabilizing mutual exclusion", 1990).
+% Translates to a probabilistic JANI `mdp` and exercises the `dist` / Stoch
+% translation together with parallel composition and communication.
+%
+% THE ADAPTATION (why the upstream model cannot be translated as-is):
+%   The original uses ONE data-carrying channel and lets mCRL2 `comm` route each
+%   token by DATA matching:
+%       send_token(id,next) | read_token(next,id) -> comm_token
+%   i.e. a send only synchronises with the read whose arguments agree, which is
+%   what pins a token to the correct ring neighbour. JANI/Modest synchronisation
+%   is on action LABELS only — the data an action carries is NOT matched when
+%   composing — so that routing is lost in translation: any process's send would
+%   sync with any process's read and the ring collapses to a complete graph.
+%
+%   Fix: encode the topology in the labels. Each directed ring link u->v gets its
+%   own channel  s_uv | r_uv -> c_uv , so the label alone routes the token and no
+%   data-matching is needed. The token itself is process state (token:Bool), not
+%   data on the action, so the actions are nullary. Semantics are unchanged: a
+%   process holding a token passes it to a uniformly-random neighbour
+%   (dist b:Bool[1/2]); tokens merge on contact; the token count never grows and
+%   never reaches 0, converging to exactly one (mutual exclusion).
+%
+%   Link naming: forward link i->i+1 and backward link i->i-1 (mod 5).
+% ============================================================================
+
+act
+  s01,r01,c01, s12,r12,c12, s23,r23,c23, s34,r34,c34, s40,r40,c40,   % forward  i -> i+1
+  s10,r10,c10, s21,r21,c21, s32,r32,c32, s43,r43,c43, s04,r04,c04;   % backward i -> i-1
+
+proc
+  % Pi: with a token, flip a fair coin and pass it to next (i+1) or prev (i-1);
+  %     always able to receive a token from either neighbour (tokens merge).
+  P0(token:Bool) = token -> (dist b:Bool[1/2]. b -> s01.P0(false) <> s04.P0(false))
+                 + r40.P0(true) + r10.P0(true);
+  P1(token:Bool) = token -> (dist b:Bool[1/2]. b -> s12.P1(false) <> s10.P1(false))
+                 + r01.P1(true) + r21.P1(true);
+  P2(token:Bool) = token -> (dist b:Bool[1/2]. b -> s23.P2(false) <> s21.P2(false))
+                 + r12.P2(true) + r32.P2(true);
+  P3(token:Bool) = token -> (dist b:Bool[1/2]. b -> s34.P3(false) <> s32.P3(false))
+                 + r23.P3(true) + r43.P3(true);
+  P4(token:Bool) = token -> (dist b:Bool[1/2]. b -> s40.P4(false) <> s43.P4(false))
+                 + r34.P4(true) + r04.P4(true);
+
+init
+  allow({c01,c12,c23,c34,c40,c10,c21,c32,c43,c04},
+    comm({s01|r01->c01, s12|r12->c12, s23|r23->c23, s34|r34->c34, s40|r40->c40,
+          s10|r10->c10, s21|r21->c21, s32|r32->c32, s43|r43->c43, s04|r04->c04},
+      P0(true)||P1(true)||P2(true)||P3(true)||P4(true)));
